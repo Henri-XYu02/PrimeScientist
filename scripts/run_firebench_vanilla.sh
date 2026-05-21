@@ -24,12 +24,12 @@ SESSION="firebench-vanilla"
 COMMON="--benchmark fire_bench --agent codex --model gpt-5 --max_tokens 1500000 --max_iters 15"
 
 TASKS=(
-    # activation_control # (done)
+    activation_control # (done)
     llm_value_consistency
-    # seca_hallucination # (done)
+    seca_hallucination # (done)
     to_cot_or_not_to_cot
-    # questbench
-    # learning_order_agreement
+    questbench
+    learning_order_agreement
     max_suppression
     counterfactual_simulatability
     neural_collapse_losses
@@ -44,7 +44,7 @@ if ! tmux has-session -t "=$SESSION" 2>/dev/null; then
 fi
 
 for task in "${TASKS[@]}"; do
-    cmd="conda run --no-capture-output -n firebench python run_vanilla.py $COMMON --task ${task}"
+    cmd="conda run --no-capture-output -n treescientist python run_vanilla.py $COMMON --task ${task}"
     echo ">>> Launching firebench-vanilla/${task} in tmux window '${task}'"
     tmux new-window -t "=$SESSION" -n "$task" \
         -c "$WORKDIR" \

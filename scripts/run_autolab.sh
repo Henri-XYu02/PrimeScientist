@@ -20,16 +20,16 @@
 set -e
 
 SESSION="autolab"
-COMMON="--benchmark autolab --agent codex --model gpt-5 --reflector_agent codex --reflector_model gpt-5 --proposals 2 --budget 15 --max_tokens 1500000 --force_init"
+COMMON="--benchmark autolab --agent codex --model gpt-5 --reflector_agent codex --reflector_model gpt-5 --proposals 3 --budget 15 --max_tokens 1500000 --force_init"
 
 TASKS=(
     gaussian_blur
     hash_join
     concurrent_kv_wal
     flash_attention
-    # fft_rust
-    # vliw_scheduler
-    # smallest_game_player
+    fft_rust
+    vliw_scheduler
+    smallest_game_player
 )
 
 WORKDIR="$(cd "$(dirname "$0")" && pwd)"
@@ -40,7 +40,7 @@ if ! tmux has-session -t "$SESSION" 2>/dev/null; then
 fi
 
 for task in "${TASKS[@]}"; do
-    cmd="conda run --no-capture-output -n firebench python run_search.py $COMMON --task ${task}"
+    cmd="conda run --no-capture-output -n treescientist python run_search.py $COMMON --task ${task}"
     echo ">>> Launching autolab/${task} in tmux window '${task}'"
     tmux new-window -t "$SESSION" -n "$task" \
         -c "$WORKDIR" \

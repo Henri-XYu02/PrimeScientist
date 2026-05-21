@@ -29,15 +29,15 @@ COMMON="--benchmark fire_bench --agent codex --model gpt-5 --reflector_agent cod
 
 TASKS=(
     activation_control
-    # llm_value_consistency
+    llm_value_consistency
     seca_hallucination
-    # to_cot_or_not_to_cot
+    to_cot_or_not_to_cot
     questbench
     learning_order_agreement
-    # grokking_or_not
-    # max_suppression
-    # counterfactual_simulatability
-    # neural_collapse_losses
+    grokking_or_not
+    max_suppression
+    counterfactual_simulatability
+    neural_collapse_losses
 )
 
 WORKDIR="$(cd "$(dirname "$0")" && pwd)"
@@ -48,7 +48,7 @@ if ! tmux has-session -t "=$SESSION" 2>/dev/null; then
 fi
 
 for task in "${TASKS[@]}"; do
-    cmd="conda run --no-capture-output -n firebench python run_search.py $COMMON --task ${task}"
+    cmd="conda run --no-capture-output -n treescientist python run_search.py $COMMON --task ${task}"
     echo ">>> Launching fire_bench/${task} in tmux window '${task}'"
     tmux new-window -t "=$SESSION" -n "$task" \
         -c "$WORKDIR" \

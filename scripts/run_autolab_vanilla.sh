@@ -24,7 +24,7 @@ TASKS=(
     flash_attention
     fft_rust
     vliw_scheduler
-    # smallest_game_player
+    smallest_game_player
 )
 
 WORKDIR="$(cd "$(dirname "$0")" && pwd)"
@@ -35,7 +35,7 @@ if ! tmux has-session -t "$SESSION" 2>/dev/null; then
 fi
 
 for task in "${TASKS[@]}"; do
-    cmd="conda run --no-capture-output -n firebench python run_vanilla.py $COMMON --task ${task}"
+    cmd="conda run --no-capture-output -n treescientist python run_vanilla.py $COMMON --task ${task}"
     echo ">>> Launching autolab-vanilla/${task} in tmux window '${task}'"
     tmux new-window -t "$SESSION" -n "$task" \
         -c "$WORKDIR" \

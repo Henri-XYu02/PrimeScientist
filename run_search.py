@@ -1,42 +1,4 @@
 #!/usr/bin/env python3
-"""
-run_search.py — PUCT-guided self-improvement search for any benchmark.
-
-Works with any benchmark that provides:
-  - an instruction file per task
-  - an agent runner
-  - an evaluator that produces a scalar score
-
-Built-in benchmarks:  fire_bench, autolab
-Add more in benchmarks/registry.py
-
-Usage:
-  # FIRE-Bench (research paper replication)
-  python run_search.py \\
-      --benchmark fire_bench \\
-      --task questbench \\
-      --agent codex --model gpt-5 \\
-      --budget 10 --proposals 2
-
-  # AutoLab (systems optimisation)
-  python run_search.py \\
-      --benchmark autolab \\
-      --benchmark_path /path/to/autolab \\
-      --task aes_ctr \\
-      --agent terminus-2 --model gpt-4o \\
-      --budget 10 --proposals 2
-
-Search tree layout  (one tree per task):
-  <output_dir>/{task}/
-    root/
-      skill.md, {task}_insight.md, packet.json, stats.json, children/
-        proposal_0/
-          skill.md, prior.json, {task}_insight.md,
-          packet.json, stats.json, children/
-    reflector_session.json
-    results.tsv
-"""
-
 import argparse
 import json
 import os
@@ -52,7 +14,6 @@ from dotenv import load_dotenv
 load_dotenv()
 
 MAIN_PATH = Path(__file__).parent
-DATA_PATH = Path("/home/xinle/FIRE-Bench")
 
 from search.tree import (
     TreeNode, init_tree, load_tree,
@@ -687,7 +648,7 @@ def main() -> None:
                         help="Total agent runs (evaluations)")
     parser.add_argument("--proposals",      type=int, default=2,
                         help="Skill variants proposed per reflection")
-    parser.add_argument("--output_dir",     default="/data/xinle/FIRE-Bench/search_tree",
+    parser.add_argument("--output_dir",     default=os.environ.get("FIRE_BENCH_SEARCH_TREE", "./search_tree"),
                         help="Root dir for search trees (one subdir per task)")
     parser.add_argument("--alpha_max",       type=float, default=10.0,
                         help="Cap on BAVT alpha=1/r_t; prevents extreme exploitation at near-zero budget")

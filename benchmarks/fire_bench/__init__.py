@@ -7,6 +7,7 @@ Primary score: F1.
 """
 
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -22,7 +23,7 @@ from search.tree import TreeNode
 
 FIRE_BENCH_DIR = Path(__file__).parent            # benchmarks/fire_bench/
 MAIN_PATH      = FIRE_BENCH_DIR.parent.parent     # repo root
-DATA_PATH = Path("/data/xinle/FIRE-Bench")        # large-file storage
+DATA_PATH = Path(os.environ.get("FIRE_BENCH_DATA") or MAIN_PATH / "fire_bench_data")
 
 
 class FireBench(Benchmark):

@@ -1,6 +1,5 @@
 env_template
 /.claude
-/.codex
 /log
 /results
 /runs

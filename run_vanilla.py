@@ -1,40 +1,4 @@
 #!/usr/bin/env python3
-"""
-run_vanilla.py — Vanilla AutoResearch baseline (linear edit-run-keep-or-revert).
-
-Reproduces the loop from https://github.com/karpathy/autoresearch , which is
-the standard non-tree-search baseline referenced in docs/paper.tex:
-
-  while budget not exhausted:
-      copy best_state to a fresh iter_sandbox
-      inject a HISTORY.md summarising previous iterations into the sandbox
-      run the coding agent on the sandbox (agent edits code in-place)
-      evaluate
-      if score improves: commit — replace best_state with iter_sandbox
-      else:               revert — discard iter_sandbox, best_state unchanged
-
-Compared with our tree-search approach (run_search.py) this baseline:
-  - does no tree branching (purely linear history)
-  - has no reflector subprocess (agent both proposes and executes)
-  - still respects the same --max_tokens budget cap, for a fair comparison
-
-Directory layout per task:
-  <output_dir>/{task}/
-      best_sandbox/              persistent "best" code state (git-commit analogue)
-      iter_000/
-          sandbox/               agent's edit of best_sandbox for this iteration
-          packet.json
-          log.log
-      iter_001/
-          ...
-      results.tsv                iter, score, delta, action, tokens_cum
-      costs.tsv                  same format as run_search.py's costs.tsv
-
-Supports both autolab (code editing on a persistent codebase) and fire_bench
-(research replication; iteration 0 builds from data+utils, later iterations
-seed from best_sandbox via the benchmark's inheritance flow).
-"""
-
 import argparse
 import json
 import os
@@ -48,7 +12,6 @@ from dotenv import load_dotenv
 load_dotenv()
 
 MAIN_PATH = Path(__file__).parent
-DATA_PATH = Path("/home/xinle/FIRE-Bench")
 
 from benchmarks.registry import load_benchmark
 from benchmarks.utils import append_cost_ledger, log_error
@@ -358,7 +321,7 @@ def main() -> None:
                         help="Coding agent (codex, claude, ...)")
     parser.add_argument("--model",          default="gpt-5",
                         help="LLM model for the agent")
-    parser.add_argument("--output_dir",     default="/data/xinle/FIRE-Bench/vanilla_runs",
+    parser.add_argument("--output_dir",     default=os.environ.get("FIRE_BENCH_VANILLA_RUNS", "./vanilla_runs"),
                         help="Root dir for vanilla runs (one subdir per task)")
     parser.add_argument("--max_tokens",     type=int, required=True,
                         help="Stop when total input+output tokens exceed this")

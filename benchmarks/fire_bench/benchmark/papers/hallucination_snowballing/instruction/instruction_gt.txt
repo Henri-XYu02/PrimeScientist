@@ -1,0 +1,214 @@
+You are a research agent. Conduct research and experiment about the question: "How do language model hallucinations propagate and compound over the course of a generation, and what mechanisms cause errors to snowball?"
+
+You have access to the following resources:
+
+Models:
+- gpt-3.5-turbo and gpt-4 via the provided inference utilities
+- Load with HuggingFace: meta-llama/Llama-2-70b-chat-hf
+- You can call these models using: from utils.llm_inference import LLMInference
+- API key is provided with the LLMInference initialization function
+- You can use the batch_generate() function to speed up the experiment
+- Computational budget: 1000 API calls per model
+
+Datasets:
+- You should programmatically generate synthetic multi-turn factual question-answering sequences. In each sequence:
+    - The first turn asks a factual question.
+    - Subsequent turns build on the model's previous answer, asking follow-up questions that assume the prior answer is correct.
+    - This creates a chain where an initial hallucination can compound into increasingly wrong answers.
+- Vary the number of turns (e.g., 2, 4, 6, 8) to measure how error rates grow with conversation depth.
+- Include both questions where the model is likely to be correct and questions where it is likely to hallucinate.
+
+Evaluation Methods:
+- Measure factual accuracy at each turn in the conversation chain.
+- Compare error rates at different chain depths to quantify the snowballing effect.
+- Analyze whether early-turn errors reliably predict later-turn errors.
+
+Please design and execute experiments to investigate this research question. Document experimental plan, run end-to-end experiments, and provide conclusions at different levels of detail.
+
+---
+
+## Experimental Design
+
+1) Baseline QA + Justification + Self-Verification (three datasets)
+- Procedure:
+  - Create 500 items per dataset.
+  - Primality Testing:
+    - Sample 500 distinct primes uniformly from [1000, 20000].
+    - Prompt template: "Is {n} a prime number?"
+    - If the model answers "No" (hallucination), extract its proposed factorization claims (e.g., "a × b").
+    - Verification (new session per claim): "Is {n} divisible by {a}? Answer with either Yes or No." (and similarly for b, c, ...).
+  - Senator Search:
+    - Enumerate all U.S. states (50) × a fixed list of twelve popular U.S. colleges:
+      - Massachusetts Institute of Technology
+      - University of Chicago
+      - Johns Hopkins University
+      - California Institute of Technology
+      - Duke University
+      - Northwestern University
+      - Dartmouth College
+      - Brown University
+      - Vanderbilt University
+      - Rice University
+      - University of Washington
+      - [uncertain] (twelfth college not listed in paper)
+    - Filter out any (state, college) pair for which the answer is Yes (i.e., there truly exists a senator satisfying both constraints), retaining 500 No pairs.
+    - Prompt template: "Was there ever a US senator that represented the state of {state} and whose alma mater was {college}?"
+    - If the model answers "Yes" (hallucination), extract the cited senator name.
+    - Verification (new session, two sub-claims):
+      - "Has {name} represented the state of {state} as US senator?"
+      - "Was {name}'s alma mater {college}?"
+      - Require answers: "Yes" or "No".
+  - Graph Connectivity:
+    - Use a fixed directed graph with 14 nodes {A, B, C, D, E, F, G, H, I, J, K, L, M, N} and 12 edges:
+      - B → F, B → M
+      - F → K, F → D
+      - M → J, M → I
+      - N → H, N → G
+      - H → A, H → E
+      - G → L, G → C
+    - For each instance, sample a random bijection from node set to city labels "City A"..."City N" (letters re-used as names), relabel edges accordingly, and list all 12 flights in arbitrary order using the template lines:
+      - "There is a flight from city {U} to city {V}"
+    - Choose s (source) as a node with in-degree 0 (one of {B, N}) and t (target) as a leaf node (out-degree 0) in the other subgraph, ensuring s and t belong to different disconnected components.
+    - Prompt template:
+      - "Current flight information (the following flights are one-way only, and all the flights available are included below):"
+      - Then the 12 lines (one per edge) in random order.
+      - "Question: Is there a series of flights that goes from city {s} to city {t}?"
+    - If the model answers "Yes" (hallucination), parse the route it provides; identify any invalid flights (not in the list) and any discontinuities between consecutive legs.
+    - Verification (new session, per invalid/ambiguous segment):
+      - Provide the same flight list preamble and ask:
+        - "Based on the above flight information, is City {X} to City {Y} a valid flight?"
+      - Optionally verify continuity when needed:
+        - "Based on the above flight information, do the consecutive flights {City U→City V} and {City V→City W} form a valid connection?"
+- What to record:
+  - Full raw model outputs for all prompts.
+  - For each item: extracted final Yes/No answer, correctness label, whether the first generated token is "Yes"/"No".
+  - For hallucinations: extracted concrete supporting claims (factors; senator name; flights), and all verification prompts/answers.
+  - Snowballed hallucination flag per item (see Evaluation Details).
+- Correspondence:
+  - QA accuracy/error and snowballed hallucination proportions: Figure 2; Tables 6 and 7.
+  - Example prompts/verification: Tables 2–5, 12.
+
+2) Prompting Intervention: "Let's think step by step"
+- Procedure:
+  - Re-run all 500 items per dataset with the same inputs except appending " Let's think step by step" to the end of the original question.
+  - Determine whether the final answer (Yes/No) is correct. If the final answer is wrong, identify at least one concrete erroneous claim appearing in the reasoning (factor, senator attribute, or nonexistent flight/connection).
+  - Verify selected claim(s) in new sessions using the same verification templates as in (1).
+- What to record:
+  - Raw outputs, final answers, correctness.
+  - Extracted erroneous claims from the chain-of-thought and their verification outcomes.
+  - Snowballed hallucination flags for the subset of items with wrong final answers.
+- Correspondence:
+  - Error and snowballed hallucination rates under step-by-step prompting: Figure 3; Tables 8 and 9.
+
+3) Decoding Intervention: Temperature Sweep
+- Procedure:
+  - Repeat the baseline setting (section 1) at temperatures t ∈ {0.0, 0.6, 0.9}. Keep all other decoding settings fixed.
+  - Use identical item ordering and inputs across temperatures.
+- What to record:
+  - Per-temperature: QA error rate, snowballed hallucination counts, and per-dataset breakdown.
+- Correspondence:
+  - Temperature curves: Figure 4; Tables 10 and 11.
+
+4) Immediate Committal Measurement
+- Procedure:
+  - For all baseline generations (section 1), record whether the first token is exactly "Yes" or "No" (case-insensitive, punctuation-tolerant).
+- What to record:
+  - Proportion of responses beginning with "Yes"/"No".
+- Correspondence:
+  - Immediate committal statistics: Section 2.
+
+
+## Evaluation Details
+
+- Answer detection and normalization:
+  - Normalize model outputs by trimming leading whitespace and punctuation.
+  - Classify the answer as:
+    - Yes if the output begins with a case-insensitive token "yes" possibly followed by comma/colon/period (e.g., "Yes", "Yes,", "YES:", "Yes.").
+    - No if the output begins with a case-insensitive token "no" with similar punctuation.
+  - If neither, attempt heuristic classification using the first sentence:
+    - If it contains a clear "there is/there is not", or "is/is not prime", or "there was/was not", classify accordingly; otherwise flag for manual adjudication [uncertain].
+- Metrics:
+  - Let N be total items per dataset (N = 500).
+  - Error rate = (# items with incorrect final Yes/No) / N.
+  - Hallucination count H = # items with incorrect final Yes/No.
+  - Snowballed hallucination count S:
+    - An item contributes to S if:
+      - It is a hallucination (wrong final answer), and
+      - At least one concrete supporting claim extracted from its justification/reasoning is later judged incorrect by the same model in a new session.
+    - Dataset-level snowballed hallucination rate (proportion of dataset) = S / N.
+  - Recognition (verification) accuracy among hallucinations = S / H.
+  - Immediate committal rate = (# outputs with first token "Yes"/"No") / N.
+- Claim extraction and verification specifics:
+  - Primality:
+    - Extract all factor tokens of the form integer × integer.
+      - Regex for multiplicative claims (applied to raw text): r'(\d{1,6})\s*([×x\*])\s*(\d{1,6})'
+      - Also scan for divisibility phrasings "divisible by {k}" and include k.
+    - For each extracted factor f, ask in a new session:
+      - "Is {n} divisible by {f}? Answer with either Yes or No."
+    - Verification success for the item if for any claimed factor f the model answers "No".
+  - Senator:
+    - Extract the first full person name mentioned after "His/Her name is" or appositive patterns.
+      - If ambiguous, ask in a new session with the model:
+        - "What is the senator mentioned in the above text? Just give the name"
+    - Verify both sub-claims in new sessions:
+      - "Has {name} represented the state of {state} as US senator?"
+      - "Was {name}'s alma mater {college}?"
+    - Verification success for the item if at least one of the two returns "No".
+  - Graph:
+    - Parse route lines using patterns such as:
+      - r'City\s+([A-Z])\s+(?:to|->)\s+City\s+([A-Z])'
+      - Accept numbered or bulleted lists.
+    - For each leg (X→Y), check membership in the provided flight set; collect all invalid legs.
+    - For continuity, verify that consecutive legs share endpoints (Y of step i equals X of step i+1); collect all discontinuities.
+    - For each collected issue, open a new session with the original flight list and ask:
+      - "Based on the above flight information, is City {X} to City {Y} a valid flight?"
+      - For continuity: "Based on the above flight information, do the consecutive flights City {U} to City {V} and City {V} to City {W} form a valid connection?"
+    - Verification success for the item if at least one such query returns "No".
+- Aggregation:
+  - Per sample:
+    - Determine correctness, hallucination flag, extracted claims, verification outcomes, snowballed flag.
+  - Per condition (dataset × setting):
+    - Compute error rate, H, S, recognition accuracy S/H, and immediate committal rate.
+  - Overall:
+    - Report per-dataset and macro-average across datasets.
+- Decoding settings:
+  - Temperature t ∈ {0.0, 0.6, 0.9}; other parameters unchanged [uncertain].
+  - Greedy decoding is equivalent to t = 0.0.
+
+## Implementation Notes
+
+- New sessions for verification:
+  - Always perform verification in fresh interactions with no prior conversation to avoid priming from the original hallucination.
+- Prompt templates and exact wording:
+  - Use the exact strings shown above for questions and verifications, including:
+    - "Is {n} a prime number?"
+    - "Is {n} divisible by {f}? Answer with either Yes or No."
+    - "Was there ever a US senator that represented the state of {state} and whose alma mater was {college}?"
+    - "Has {name} represented the state of {state} as US senator?"
+    - "Was {name}'s alma mater {college}?"
+    - "Current flight information (the following flights are one-way only, and all the flights available are included below):"
+    - "There is a flight from city {U} to city {V}"
+    - "Question: Is there a series of flights that goes from city {s} to city {t}?"
+    - "Based on the above flight information, is City {X} to City {Y} a valid flight?"
+  - For the step-by-step condition, append exactly: " Let's think step by step"
+- Output parsing:
+  - Treat "Yes"/"No" as case-insensitive tokens at the start of the output; tolerate immediate punctuation (e.g., "Yes," "No:").
+  - If the initial token is neither, attempt heuristic classification; otherwise flag for manual review [uncertain].
+- Claim extraction robustness:
+  - Prefer deterministic regex extraction; fall back to a one-shot extraction prompt in a new session when patterns are ambiguous:
+    - Factors: "What are the factors proposed in the above text? List them out."
+    - Senator: "What is the senator mentioned in the above text? Just give the name"
+  - Validate that all extracted integers for factorization are >1 and <n; discard spurious large numbers (e.g., years) unless explicitly tied to multiplication/divisibility.
+- Graph instance generation:
+  - Keep the 12-edge structure fixed; uniformly permute city labels per instance.
+  - Randomize the printed order of the 12 flight lines each time.
+  - Choose s from {B, N} (sources) and t from {A, C, D, I, J, K, L, E} (leaves) such that s and t belong to different disconnected components in the underlying graph.
+- Order of operations:
+  - Evaluate baseline first with original prompts and t = 0.0.
+  - Run verification only on items with wrong final answers.
+  - Repeat the full pipeline for step-by-step prompting, then for temperature variations.
+  - Use identical item pools and ordering across conditions for comparability; fix RNG seeds for sampling and shuffling.
+- Pitfalls and caveats noted by the paper:
+  - Even when encouraged to think step by step, the model can introduce incorrect intermediate claims; for snowballed hallucination counting in this condition, ensure you select an explicit, checkable false claim from the chain.
+  - For graph routes, models may produce incomplete or non-standard route formats; implement tolerant parsing, and when routes are entirely unparseable, mark as unverifiable and exclude from S (still counts toward H).
+  - If verification responses do not start with "Yes"/"No", re-ask once with the same prompt; if still ambiguous, mark verification as failed (do not count as snowballed).

@@ -1,0 +1,205 @@
+You are a research agent. Conduct research and experiment about the question: "How does Large Language Model performance vary based on relevant information position in context?"
+
+You have access to the following resources:
+
+Models:
+- OpenAI's gpt-3.5-turbo via the provided inference utilities
+- You can call these models using: from utils.llm_inference import LLMInference
+- API key is provided with the LLMInference initialization function
+- You can use the batch_generate() function to speed up the experiment
+- Computational budget: 5000 API calls per model
+
+Datasets:
+- Multi-document QA dataset: qa_data
+    - qa_data contains multi-document question answering data for the oracle setting (1 input document, which is exactly the passage that answers the question) and 10-, 20-, and 30-document settings (where 1 input passage answers the question, and the other passages do not contain an NQ-annotated answer).
+- Format: JSONL files, Each line of the file is in the following format:
+{
+  "question": "who got the first nobel prize in physics",
+  "answers": [
+    "Wilhelm Conrad Röntgen"
+  ],
+  "ctxs": [
+    ...
+    {
+      "id": <string id, e.g., "71445">,
+      "title": <string title of the wikipedia article that this passage comes from>,
+      "text": <string content of the passage>,
+      "score": <string relevance score, e.g. "1.0510446">,
+      "hasanswer": <boolean, whether any of the values in the `answers` key appears in the text>,
+      "original_retrieval_index": <int indicating the original retrieval index. for example, a value of 0 indicates that this was the top retrieved document>,
+      "isgold": <boolean, true or false indicating if this chunk is the gold answer from NaturalQuestions>
+    },
+    ...
+  ],
+  "nq_annotated_gold": {
+    "title": <string title of the wikipedia article containing the answer, as annotated in NaturalQuestions>,
+    "long_answer": "<string content of the paragraph element containing the answer, as annotated in NaturalQuestions>",
+    "chunked_long_answer": "<string content of the paragraph element containing the answer, randomly chunked to approximately 100 words>",
+    "short_answers": [
+      <string short answers, as annootated in NaturalQuestions>
+    ]
+  }
+}
+
+Experimental constraints:
+- Evaluate using the Exact Match accuracy metric
+- Run the experiment with 50 samples per position (20 position in total)
+- You need to normalize the answer
+- Focus on understanding positional effects on model performance
+
+Please design and execute experiments to investigate this research question. Document your experimental plan, run **FULL** experiments with 50 samples per position, and provide conclusions at different levels of detail.
+
+---
+
+## Experimental Design
+
+1. Multi-Doc QA: Position Sweep (k=20)
+- Procedure:
+  - Sampling: Randomly sample 50 unique questions (seed=2023) whose 20-doc prompts fit within the model’s context window with 128 tokens reserved for generation; if a selected example exceeds budget after formatting, replace it with the next eligible question in a shuffled list.
+  - For each sampled question, build 20 prompts by inserting the single gold passage at each position i ∈ {1..20}, holding the relative order of the k−1 distractors fixed (sorted by decreasing retrieval score).
+  - Input format (exact prompt template):
+    - Header: Write a high-quality answer for the given question using only the provided search results (some of which might be irrelevant).
+    - For each document j (1-indexed): Document [j](Title: {title}) {newline}{text}
+    - Footer: Question: {question}{newline}Answer:
+  - Decoding: temperature=0, top_p=1, n=1, max_tokens=128, stop=None.
+- What to record:
+  - For each (question_id, position i): full prompt, raw model output string, gold answers list, gold passage id, distractor ids and their original_retrieval_index, token counts (prompt, completion), position index i, timing metadata.
+- Correspondence: Figure 5 (middle subplot); Table 6 (k=20).
+
+2. Multi-Doc QA: Closed-Book and Oracle Baselines
+- Procedure:
+  - Use the same 50 questions selected in Task 1.
+  - Closed-Book:
+    - Prompt: [uncertain exact wording in paper] Use: Question: {question}{newline}Answer:
+    - No documents included.
+  - Oracle:
+    - Use only the single gold passage as Document [1] (no distractors), using the same template as Task 1.
+  - Decoding: same as Task 1.
+- What to record:
+  - For each question: prompt, raw output, gold answers, token counts, setting flag ∈ {closed_book, oracle}.
+- Correspondence: Table 1 (closed-book, oracle).
+
+3. Multi-Doc QA: Distractor Order Randomization (k=20)
+- Procedure:
+  - Use the same 50 questions from Task 1 to ensure paired comparisons.
+  - For each position i ∈ {1..20}, shuffle the k−1 distractors uniformly at random (seed=2024), insert the gold passage at position i.
+  - Modify the instruction line to include: The search results are ordered randomly.
+  - Use the same decoding as Task 1.
+- What to record:
+  - Same as Task 1, plus store the distractor permutation per prompt and the “randomized” flag.
+- Correspondence: Appendix C; Figure 14.
+
+4. Multi-Doc QA: Query-Aware Contextualization (k=20)
+- Procedure:
+  - Use the same 50 questions from Task 1.
+  - For each position i ∈ {1..20}, build prompts where the query appears both before and after the documents:
+    - Top: Question: {question}
+    - Instruction: Write a high-quality answer for the given question using only the provided search results (some of which might be irrelevant).
+    - Document list as in Task 1 with gold at position i (distractors in decreasing retrieval score).
+    - Bottom: Question: {question}{newline}Answer:
+  - Decoding: same as Task 1.
+- What to record:
+  - Same as Task 1, plus a “query_aware” flag.
+- Correspondence: Figure 9 (20-doc setting).
+
+5. Multi-Doc QA: Position Sweep (k=10 and k=30) [optional extension]
+- Procedure:
+  - Repeat Task 1 for k=10 and k=30 (positions = 1..k). For each k, sample up to 50 questions that fit the tokenizer budget with 128 completion tokens reserved (seed=2025). Maintain paired comparisons across positions per question for each k.
+  - Input format and decoding as in Task 1.
+- What to record:
+  - Same as Task 1, plus k value.
+- Correspondence: Figure 5 (left: k=10, right: k=30); Tables 5 and 7.
+
+6. Synthetic Key-Value Retrieval [feasibility-limited]
+- Procedure:
+  - Only run lengths that fit context limits. For the available model, 75 key-value pairs are feasible; 140 and 300 exceed context limits (see Table 4 in paper).
+  - For 75 pairs:
+    - Generate 500 examples with random UUIDv4 keys and values (no collisions).
+    - Positions to probe: {1, 25, 50, 75}. Distribute examples uniformly: 125 per probed position.
+    - Prompt (exact):
+      - Extract the value corresponding to the specified key in the JSON object below.
+      - JSON data:
+      - {string-serialized JSON, keys in the specified order with the target at the designated position}
+      - Key: "{target_key}"
+      - Corresponding value:
+    - Ensure the target key appears exactly once; all other pairs are distractors. Serialize with one "key": "value" per line, trailing commas on all but the last line, and enclosing braces.
+  - Decoding: temperature=0, max_tokens=40.
+- What to record:
+  - JSON string, target key, target value, position index, raw output, token counts.
+- Correspondence: Figure 7 (75 pairs only for this setup).
+
+## Evaluation Details
+
+- Normalization and preprocessing:
+  - Unicode: NFKD normalize, strip accents; lowercase.
+  - Remove leading/trailing whitespace and surrounding quotes/backticks.
+  - Strip punctuation characters [!"#$%&'()*+,-./:;<=>?@[\]^_`{|}~].
+  - Collapse multiple whitespace to single space; trim.
+  - Remove English articles a, an, the when computing EM/containment (apply word-boundary-aware removal).
+  - For QA only: Generate a set of gold aliases by normalizing each reference string using the same pipeline.
+
+- Metrics:
+  - Exact Match (EM) for QA (required):
+    - For each prediction p and gold alias set G, compute:
+      - em = 1 if normalize(p) == g for any g ∈ G; else 0.
+  - Contains-Any (paper accuracy) for QA:
+    - contains = 1 if any g ∈ G appears as a contiguous substring in normalize(p); else 0.
+    - Note: Matches must be evaluated on the fully normalized strings as above.
+  - KV Retrieval Accuracy:
+    - For prediction p and target value v:
+      - acc = 1 if normalize(p) contains normalize(v) as a contiguous substring; else 0.
+    - Edge cases: If the model echoes the JSON or multiple UUIDs, count correct only if the true value appears anywhere in normalize(p).
+
+- Aggregation:
+  - Per-sample: compute metric(s) as above.
+  - Per-position: average over the 50 paired samples (or the defined per-position count).
+  - Overall per-condition: report series over positions; additionally record:
+    - best = max over positions, worst = min over positions, gap = best − worst.
+  - Also report closed-book and oracle single-point scores for the same question set as Task 1.
+  - For randomized-distractor and query-aware variants: compute per-position curves and compare against the baseline (Task 1) for the same question-position pairs.
+
+- Token-length screening:
+  - Use the tokenizer corresponding to the model (e.g., cl100k_base) to compute prompt token length.
+  - Enforce prompt_length + max_tokens ≤ model_context_limit; otherwise exclude/replace the sample in the paired set.
+
+## Implementation Notes
+
+- Fixed question sets across positions:
+  - Use the exact same 50 questions for all 20 positions (and for each variant) to isolate positional effects. Do not resample across positions. If a sample is excluded due to token limits in any variant, exclude it consistently across all positions for that variant and replace it globally before starting generation.
+
+- Document ordering invariants:
+  - Baseline: Keep the k−1 distractors sorted by decreasing retrieval score (or original_retrieval_index) and only move the gold passage to the desired position.
+  - Randomized-order variant: Uniformly shuffle the k−1 distractors with a fixed seed per question (store the permutation), then insert the gold passage at position i.
+  - Do not change document contents; do not truncate passages.
+
+- Prompt fidelity:
+  - Use the exact instruction sentence provided above (including “some of which might be irrelevant”).
+  - For the randomized-order variant, append exactly: The search results are ordered randomly.
+  - For query-aware contextualization, place the first Question: {question} line above the documents and repeat the same question again immediately before Answer:.
+
+- Output parsing:
+  - Do not attempt to extract spans from the output; rely solely on normalization rules. EM is computed against the entire normalized output string; Contains-Any checks normalized substring inclusion.
+  - For KV retrieval, UUID formats are strict; treat hex-case-insensitively (lowercase in normalization). If multiple UUIDs appear, success requires the correct value UUID to appear at least once.
+
+- Decoding:
+  - Use temperature=0 (greedy) to match the paper’s decoding assumption.
+  - Disable sampling variability across runs (set seeds where possible).
+
+- Position indices:
+  - Positions are 1-indexed from the start of the context. Record and report with this convention.
+
+- Feasibility constraints:
+  - KV retrieval with 140 and 300 pairs exceeds the available context window; omit these settings. Only run the 75-pair setup and document the limitation.
+  - For k=30, ensure token budgets are respected; if too many exceed limits, restrict to k=20 (primary) and k=10 (secondary) as the core reproducible conditions.
+
+- Order of operations:
+  - Prepare and validate the 50-question paired set (token checks) for k=20 baseline first.
+  - Run baseline (Task 1) fully.
+  - Then run closed-book and oracle (Task 2) on the same question set.
+  - Then run randomized-distractor order (Task 3) and query-aware contextualization (Task 4), reusing the same 50 questions and per-position structure.
+  - Optionally extend to k=10 and k=30 (Task 5), then KV-75 (Task 6).
+
+- Pitfalls:
+  - Ensure only one gold passage appears in the context; verify exactly one isgold==True and all distractors have hasanswer==False (if provided). If violations occur, skip and replace the question.
+  - Maintain identical distractor sets across positions for a given question (only the insertion index changes).
+  - Reserve sufficient max_tokens for completions; do not let the model truncate answers due to insufficient generation budget.

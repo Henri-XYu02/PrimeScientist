@@ -1,0 +1,264 @@
+You are a research agent. Conduct research and experiment about the question: "The main research question is: How sensitive are widely used open-source large language models to subtle changes in prompt formatting in few-shot settings, and what are the characteristics of this sensitivity? " 
+
+You have access to the following resources:
+
+
+
+Models:
+
+- Conventional models: GPT-4o-mini, GPT-4o
+- Load with HuggingFace: meta-llama/Llama-2-13b-hf
+- You can call these models using: from utils.llm_inference import LLMInference
+- API key is provided with the LLMInference initialization function
+- You can use the batch_generate() function to speed up the experiment
+- Computational budget: 1000 API calls per model
+
+
+Datasets:
+
+
+
+
+
+Please design and execute experiments to investigate this research question. Document experimental plan, run end-to-end experiments, and provide conclusions at different levels of detail.
+
+---
+
+## Experimental Design
+
+1. Ten-format spread per task (baseline)
+- Procedure:
+  - Use the 53 Super-NaturalInstructions task IDs listed in Appendix B.1.
+  - For each task, extract the human-written instruction text and original prompt format. If no format is provided, treat the original format as “Input: {}” and “Output: {}” (used only to anchor equivalence; see grammar below).
+  - Construct prompts: instruction, then n few-shot examples, then a test example with empty answer in the last field.
+  - Few-shot n ∈ {1, 5}; fix the same random few-shot set and ordering per task and per n (seed=1729).
+  - Fix evaluation order of test items per task (seed=2024).
+  - Sample 10 plausible formats p1..p10 uniformly from the equivalence class induced by the grammar (Section 3.1 and Appendix A.2/A.3). Enforce contextual restrictions and joint perturbations.
+  - Evaluate 1000 test samples per task per format. If a task has more than 1000, subsample 1000 with seed=31415; if fewer than 1000 [uncertain], use full set.
+  - Inference is deterministic (temperature=0, top_p=1). Use max_new_tokens=5 for classification/multiple-choice tasks.
+- What to record:
+  - Per sample: prompt string; raw model output; normalized output used for exact prefix; per-class scores if ranking is computed; degenerate flag (for prefix matching); latency.
+  - Per format: accuracy (exact prefix and ranking, when available), degeneration rate (1 − centered mass), token length stats.
+  - Per task and n: min, max, spread = max − min across 10 formats.
+- Correspondence: Figure 3; Section 4.2 (also supports Figures 2a–2c with multiple n).
+
+2. Cross-model trend reversals
+- Procedure:
+  - Reuse the same per-task prompt pools as in (1).
+  - For each task, pick two formats p and p′ from the 10 sampled formats without replacement (seed=7). For each ordered pair of models (M, M′), compute accuracy on the same 1000 evaluation items for p and p′.
+  - Compute events: acc(p, M) − acc(p, M′) ≥ d and acc(p′, M′) − acc(p′, M) ≥ d for thresholds d ∈ {0.01, 0.02, 0.05, 0.10}.
+  - Significance: for each event pair, run one-sided McNemar’s test on paired per-item correctness for both comparisons; record p-values.
+- What to record:
+  - Probability of reversal at each d; fraction of reversals with p < 0.05 for both comparisons.
+- Correspondence: Figure 4; Appendix B.2 (Table 3; Figure 12; Figure 15).
+
+3. FORMATSPREAD with Bayesian bandits
+- Procedure:
+  - For each task, sample K=320 plausible formats uniformly from the equivalence class (seed=123).
+  - Use two-phase Thompson Sampling over Bernoulli rewards with mini-batch size B=20:
+    - Phase 1 (maximization): budget E/2 evaluations; priors Beta(α, β) with α = max(β·x/(1−x), 1.1), β = 5, where x is the original format’s accuracy estimated on a warm-start batch of 200 samples (disjoint subsets).
+    - Phase 2 (minimization): budget E/2; priors Beta(α + S, β + (N − S)) carried over from Phase 1 arm statistics; continue Thompson Sampling but select the smallest sampled θ.
+  - Also run UCB with c=2 and Naive sampling as baselines. Sweep E ∈ {6,400; 12,800; 25,600; 51,200}. Ensure all per-arm sample sets are disjoint across pulls.
+  - To compute “true spread” for error analysis, fully evaluate the best and worst arm found by each method on the full 1000 items.
+- What to record:
+  - For each E and method: estimated spread, best/worst arm IDs, distance to true spread, wall-clock cost.
+- Correspondence: Section 3.2; Figure 9.
+
+4. Spread growth with more formats
+- Procedure:
+  - For each of 31 tasks (subset used in feature analyses; seed=999 for selection), evaluate 500 formats on 250 samples each (disjoint per-format subsets).
+  - For k1→k2 steps in {(10→20), (20→40), (40→80), (80→160), (160→240), (240→320), (320→400)}, sample k2 formats from the 500 without replacement (100 trials each; seed per trial = 1000+t); compute spread at k1 and k2; record Δ = spread(k2) − spread(k1).
+- What to record:
+  - Probability that Δ ≥ d for d ∈ {0.01, 0.02, 0.05, 0.10}.
+- Correspondence: Figure 8.
+
+5. Feature-wise contribution analysis
+- Procedure:
+  - On 31 tasks, sample 500 formats per task (seed=2023). Evaluate each format on 250 samples (disjoint).
+  - Condition accuracy distributions on fixed choices of a single grammar constant:
+    - S1 (descriptor–value separator): values = {' ', ' - ', ' : ', ' \n\t', '- ', ': ', ':', ':: ', '::', '::: ', '\n    ', '\n ', '\n\t', '\t'}.
+    - S2 (option–text separator in enumerations): values = {'', ' ', '  ', '\t'}.
+    - C (joiner between fields): values = {' ', '\n', '\n\n', '\n\t', '\t', ' , ', ' ; \n', ' || ', ' <sep> ', ''}.
+    - Fcasing ∈ {identity, title case, UPPER, lower}.
+    - Fitem1 ∈ {(x), x., x), x ), [x], < x >}.
+    - Fitem2 ∈ {x+1, A+x, a+x, Unicode Roman (0x215F+x+1), roman(x), ROMAN(x)}.
+  - Define weakly different if [Q1,Q3] intervals don’t intersect; strongly different if whisker ranges [2.5Q1−1.5Q3, 2.5Q3+1.5Q1] don’t intersect (clipped to observed data).
+- What to record:
+  - Per-constant distribution plots; per-task flags for weak/strong differences; per-constant median spread.
+- Correspondence: Section 4.3; Figure 5; Table 1; Appendix B.4.
+
+6. Atomic perturbation impact
+- Procedure:
+  - For each of 53 tasks, start from the original format p. Randomly select 30 atomic edits (seed=321):
+    - One of: change a single S1, S2, C, Fcasing, Fitem1, or Fitem2 instance (respecting joint-perturbation constraints).
+  - For each edit, form p′ and evaluate both p and p′ on the same 1000 items (disjoint from any prior use of those items for that format). Compute |acc(p′)−acc(p)|.
+  - Repeat for both scoring criteria: ranking and exact prefix.
+- What to record:
+  - For thresholds d ∈ {0.01, 0.02, 0.05, 0.10}, probability that |Δ| ≥ d. Log top-difference examples with before/after formats.
+- Correspondence: Section 4.3; Figure 6; Table 2; Table 4.
+
+7. Non-monotonicity of the space
+- Procedure:
+  - For 24 tasks (13 MC, 11 non-MC; seed=2718), sample 300 triples (p1,p2,p3) where p2 is an atomic perturbation of p1 and p3 an atomic perturbation of p2 (respecting constraints).
+  - Evaluate exact prefix accuracy for each pi on 250 samples (same items across p1,p2,p3). Count triples that are strictly monotonic over i (increasing or decreasing).
+  - Compare against 1/3 baseline expected from random orderings.
+- What to record:
+  - Fraction monotonic for MC and non-MC separately; confidence intervals via bootstrap.
+- Correspondence: Section 4.3.
+
+8. Identifiability of formats from prompt embeddings
+- Procedure:
+  - For each of 31 tasks and n ∈ {1, 5}:
+    - Sample 10 formats; collect last hidden layer (pre-softmax) prompt embeddings for 1000 evaluation prompts per format.
+    - Dimensionality reduction: PCA to {2,5,10,20,50,100} PCs (fit on train split).
+    - Train an XGBoost multi-class classifier to predict the format ID from PCs:
+      - Train: 800 vectors/format; Test: 200 vectors/format. XGBoost params: max_depth=6, n_estimators=300, learning_rate=0.1, subsample=0.9, colsample_bytree=0.8.
+    - Compute exact prefix spread across those 10 formats. Correlate classifier accuracy (per PC count) with spread (Pearson r).
+- What to record:
+  - CDF of tasks vs. classification accuracy for each PC count; correlation values and p-values.
+- Correspondence: Section 4.4; Figure 7; Appendix B.3.
+
+9. Exact prefix matching analyses and degeneration
+- Procedure:
+  - Replicate Experiment (1) but score with exact prefix matching. Compute centered mass per format = fraction of items where normalized output matches any valid option.
+  - For each task, compute correlation between accuracy and centered mass across formats.
+- What to record:
+  - Spread distribution under exact prefix; correlations and p-values; degeneration rates.
+- Correspondence: Appendix B.2 (Figures 13–16; Table 5).
+
+10. Instruction Induction short-text generation
+- Procedure:
+  - Use the 10 tasks listed in Appendix B.2 (Instruction Induction). Use a default format “Input: {}\n Output: {}” as the base; sample 10 plausible equivalent formats per grammar.
+  - Evaluate exact prefix matching on 1000 items per task per format for n ∈ {1,5}. Max_new_tokens=5. Deterministic decoding.
+- What to record:
+  - Per-task spread across formats; accuracy boxplots by model and n.
+- Correspondence: Appendix B.2 (Figures 17–18).
+
+11. Open-ended generation with continuous metrics
+- Procedure:
+  - Use the 17 Super-NaturalInstructions open-ended tasks listed in Appendix B.2.
+  - For each task and n ∈ {1,5}, sample 10 formats; evaluate on 1000 items per format.
+  - Max_new_tokens=50; stop generation at first newline in the completion (strip leading spaces/newlines before searching for first newline); record generated text up to but excluding that newline.
+  - Compute ROUGE-L and BERTScore (F1) against reference outputs.
+- What to record:
+  - Spread across formats for both metrics by n; per-task dispersion.
+- Correspondence: Appendix B.2 (Figure 19).
+
+12. Accuracy distribution beyond spread
+- Procedure:
+  - For 30 tasks (seed=4422), evaluate 500 formats on 250 samples each (disjoint subsets).
+  - Plot the empirical accuracy distributions and compute standard deviation per task.
+- What to record:
+  - Distributions sorted by standard deviation; median σ across tasks.
+- Correspondence: Appendix B.2 (Figure 20).
+
+13. Cross-model ordering preservation
+- Procedure:
+  - For every task and pair of formats (p1,p2) among the 10 in Experiment (1), check if p1 < p2 (accuracy) under model M; test whether p1 < p2 also holds under model M′. Compute preservation ratio per (M,M′).
+- What to record:
+  - Preservation ratios per model pair.
+- Correspondence: Appendix B.2 (Table 3).
+
+
+## Evaluation Details
+
+- Metrics
+  - Probability ranking accuracy (classification and multiple-choice):
+    - Let V be the set of valid options (canonical label strings). For each v∈V, compute log P(v | prompt) as the sum of token log-probabilities for the exact string v when appended to the prompt (no extra space unless v begins with a letter/number: for LLaMA tokenizers, prepend a single space to v if its first char is alphanumeric and v does not already start with whitespace).
+    - Choose argmaxv∈V log P(v | prompt). Accuracy is the fraction of items where argmax equals the gold label.
+    - Implementation: use a forward pass to compute the conditional log-probability of v without sampling; do not allow the model to generate first.
+  - Exact prefix matching accuracy:
+    - Normalize both gold label and output prefix: lowercase, strip leading/trailing whitespace, collapse all internal whitespace (spaces, tabs, newlines) to a single space. Do not strip punctuation.
+    - Let ŷ be the normalized output prefix up to length |gold| (characters) and y the normalized gold string. Accuracy = 1[ŷ = y].
+    - Centered mass = fraction of items whose normalized prefix matches any normalized valid option (regardless of correctness).
+  - ROUGE-L and BERTScore (open-ended generation):
+    - ROUGE-L F-score via standard library (e.g., rouge-score or evaluate.load("rouge")) over single-reference matches.
+    - BERTScore F1 via evaluate.load("bertscore") with model_type="roberta-large", rescale_with_baseline=True; average over items.
+
+- Normalization and valid option mapping
+  - Build V from task definitions. For enumerated MC tasks, include all wrapper-rendered variants that plausibly appear in outputs: e.g., for label “A”, accept {'a', 'A', '(A)', 'A)', 'A.', '[A]', '<A>', 'I', 'II', ...} only if the task’s current enumeration in the prompt uses that scheme; otherwise restrict to the exact scheme present in the instruction and few-shots to avoid leakage across schemes.
+  - When p enumerates options as x1..xk (letters, roman, digits), ensure the instruction text and few-shots are modified to use x1..xk consistently; only those enumerations are accepted as valid outputs.
+
+- Aggregation
+  - Per-sample: store raw, normalized, and scores.
+  - Per-format: compute accuracy, centered mass (for prefix), mean and std of token lengths and log-probs (if recorded).
+  - Per-task, per-n, per-model: aggregate min, max, spread; for bandits, also report “distance to true spread”.
+  - For statistical tests: McNemar test on 2×2 contingency from paired correctness across models or formats; report p-values.
+
+- Edge cases
+  - If ranking scores cannot be computed due to unavailable logits, skip ranking and report exact prefix metrics and degeneration.
+  - If a label contains whitespace or multi-token strings, compute log-probability over the exact tokenized sequence; prepend a space to the first token when appropriate for tokenizer alignment.
+  - If a model emits nothing (empty string) or only whitespace, exact prefix is incorrect and not counted toward centered mass.
+
+
+## Implementation Notes
+
+- Prompt grammar and sampling
+  - Base fields: B1(d, s, f) = f(d) + s + <text>, where d is descriptor string, s ∈ S1, f ∈ Fcasing.
+  - Joining: B2(X1..Xn, c) = X1 + c + ... + c + Xn, with c ∈ C.
+  - Enumeration: B3(d, j1..jn, s1, s2, c, f1, f2) = join of B1(ei, s1, f2) for i=1..n using c, where ei = f2(d) + s2 + f1(ji); f1 ∈ Fitem1, f2 ∈ Fcasing, ji ∈ ℕ0; Fitem2 picks numbering (e.g., romans).
+  - Allowed constant sets (instantiate exactly as used in analyses; expand only if needed):
+    - S1 = {' ', ' - ', ' : ', ' \n\t', '- ', ': ', ':', ':: ', '::', '::: ', '\n    ', '\n ', '\n\t', '\t'}.
+    - S2 = {'', ' ', '  ', '\t'}.
+    - C = {' ', '\n', '\n\n', '\n\t', '\t', ' , ', ' ; \n', ' || ', ' <sep> ', ''}.
+    - Fcasing = {identity, title case, UPPER, lower}.
+    - Fitem1 = {(x), x., x), x ), [x], < x >}.
+    - Fitem2 = {x+1, A+x, a+x, Unicode Roman (0x215F+x+1), roman(x), ROMAN(x)}.
+  - Contextual restrictions:
+    - If B2 uses a c without newline, then all nested separators (in S1/S2) must not contain newlines.
+    - If a separator in B3 contains a newline, then c must also contain a newline.
+    - In B1, s must be non-empty.
+    - Empty c in B2 is only allowed if the first n−1 components are B1 with empty <text> (rare patterns like headers without fields).
+  - Equivalence and joint perturbations:
+    - Two formats are equivalent if they apply the same Bi rules with same descriptors and equivalent sub-elements (Appendix A.1).
+    - If two separators or spaces are equal in the original format, they must be perturbed jointly to remain equivalent.
+  - Final prompt construction:
+    - Template: inst + "\n\n" + p(D1) + "\n\n" + ... + "\n\n" + p(Dn) + "\n\n" + p(Dn+1 with empty last field).
+    - Ensure enumeration tokens in inst match the format’s itemization (e.g., switch “(A)/(B)” to “I/II” when Fitem2 changes).
+
+- Bandit search details
+  - Thompson Sampling:
+    - Rewards from mini-batches of size B are sums of Bernoulli successes; update S and N per arm; draw θi from Beta(αi+S, βi+(N−S)).
+    - Priors for maximization: Beta(α, β) with β=5 and α=max(β·x/(1−x), 1.1); x is original format’s accuracy estimated from a 200-item pilot.
+    - Minimization phase: initialize each arm with Beta(α+S, β+(N−S)) using stats from maximization.
+    - Arm pulls never reuse an evaluation item with the same arm; maintain disjoint mini-batches.
+  - UCB:
+    - θi = (Si/Ni) + c·sqrt(log t / Ni), with c=2; select argmax θi (or argmin for minimization).
+  - Naive:
+    - Uniformly allocate evaluations: floor(E/K) per arm, where K is number of sampled formats.
+
+- Scoring implementation tips
+  - Ranking:
+    - For HuggingFace models, score strings v by computing log P(v | prompt) via a single forward pass: concatenate prompt and v, shift labels to only score the v tokens; mask losses on prompt tokens.
+    - Ensure tokenizer space-handling: prepend a single space to v if needed for token alignment.
+  - Exact prefix:
+    - Extract the first |gold| characters from the raw output (after stripping leading whitespace) for comparison; then apply normalization.
+    - For degeneration, build the normalized valid set Vnorm and check membership for the normalized output prefix.
+
+- Open-ended generation
+  - Stop parsing at first newline in the generated text (after trimming leading spaces/newlines); this mitigates the model starting a new item.
+  - Use max_new_tokens=50; temperature=0; do not use sampling.
+
+- Reproducibility and ordering
+  - Fix all RNG seeds as specified; keep a single per-task, per-n shot few-shot set and ordering across all format evaluations.
+  - Evaluate examples in a fixed order across all formats and models.
+  - When comparing two formats or two models, ensure paired evaluation on the same per-item set for valid significance testing.
+
+- Pitfalls and caveats
+  - Missing logits: if an API does not expose token log-probabilities, skip ranking; rely on exact prefix and report centered mass to assess degeneration.
+  - Enumeration coherence: always update instruction enumerations to match itemization in the sampled format; otherwise valid output sets become misaligned.
+  - Tokenization quirks: some labels (e.g., roman numerals) may tokenize unexpectedly; verify scoring by reconstructing the label token sequence directly from the tokenizer.
+  - Non-monotonic search space: avoid local search heuristics (e.g., hill climbing) for finding extrema; use Bayesian bandits as above.
+  - Budget constraints: for tight API budgets, prefer FORMATSPREAD with small K and B (e.g., K=40–80, B=10) and a single E sweep; log uncertainty bands (Beta posterior credible intervals) alongside point estimates.
+
+- Order of operations for full replication track
+  1) Build task pools and fix few-shot selections and evaluation splits.
+  2) Run the 10-format baseline per task and n, collect both metrics (ranking if available).
+  3) Run cross-model trend reversal on the same 10-format pools.
+  4) Run feature-wise analyses (31-task subset) and atomic perturbations (53 tasks).
+  5) Run non-monotonic triple analysis (24 tasks).
+  6) Run embedding identifiability (31 tasks, 10 formats, 1000 items each).
+  7) Run FORMATSPREAD comparisons (K=320) across E for Thompson/UCB/Naive; compute distance to true spread.
+  8) Run spread growth analysis with k1→k2 steps.
+  9) Replicate exact prefix analyses and degeneration correlations.
+  10) Run Instruction Induction short-text and open-ended generation experiments.

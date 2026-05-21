@@ -1,0 +1,345 @@
+You are a research agent. Conduct research and experiment about the question: "How well do LLMs follow explicit length constraints in their generated outputs?"
+
+You have access to the following resources:
+
+Models:
+- OpenAI's gpt-4o, gpt-4o-mini, o1-mini
+- Claude's claude-3-7-sonnet-20250219
+- Gemini's gemini-2.0-flash, gemini-2.5-pro
+- Load with HuggingFace: meta-llama/Llama-3.1-8B-Instruct
+- Load with HuggingFace: Qwen/Qwen2.5-7B-Instruct
+- You can call these models using: from utils.llm_inference import LLMInference
+- API key is provided with the LLMInference initialization function
+- You can use the batch_generate() function to speed up the experiment
+- Computational budget: 1000 API calls per model
+
+Datasets:
+- You should programmatically generate a diverse set of prompts with explicit length constraints. Design prompts that:
+    - Specify output length in different units: words, sentences, paragraphs, characters.
+    - Cover a range of target lengths: short (e.g., 10 words), medium (e.g., 100 words), long (e.g., 500 words).
+    - Span multiple task types: summarization, creative writing, explanation, listing.
+    - Include both upper-bound constraints ("at most N words"), lower-bound constraints ("at least N words"), and exact constraints ("exactly N words").
+
+Evaluation Methods:
+- Measure the actual output length (in the specified unit) versus the requested length.
+- Compute absolute and relative deviation from the target.
+- Analyze compliance rate (fraction of outputs within an acceptable tolerance, e.g., +/- 10%).
+- Compare performance across constraint types (upper, lower, exact), length units, and models.
+
+Please design and execute experiments to investigate this research question. Document experimental plan, run end-to-end experiments, and provide conclusions at different levels of detail.
+
+---
+
+## Experimental Design
+
+1) Main LIFEBench evaluation (Eq/AtMost/AtLeast; 10 lengths; bilingual; 4 tasks)
+- Procedure:
+  - Load the benchmark instances (10,800 total = 360 base items × 3 control methods × 10 constraints).
+  - Control methods: Equal To, At Most, At Least.
+  - Length constraints: {16, 32, 64, 128, 256, 512, 1024, 2048, 4096, 8192}.
+  - Language-specific unit: English in words; Chinese in characters.
+  - Prompting format for every instance:
+    - Use the two-part template with both sections present and in this order:
+      - [Instruction] … (task-specific request and content)
+      - [Requirement] … (control method + length value + unit explicitly named)
+  - Inference settings: max_new_tokens = min(65536, provider limit); temperature = 0.8 and top_p = 1 for non-reasoning; reasoning effort = “medium” if supported.
+  - Execute in randomized order across all instances to avoid drift.
+- What to record:
+  - Raw model text output.
+  - Language tag, task category/subtype, control method, constraint value.
+  - Output word count (unified counter, see Evaluation Details).
+  - Computed LD and LS per instance.
+  - Empty-output count (exclude those from metrics but log rate).
+- Correspondence:
+  - Table 1, Figure 3 (Left/Middle/Right), Figures 9–11, E.1–E.2.
+
+2) Extended ultra-long constraints
+- Procedure:
+  - Add constraints 16,384 and 32,768 words under Equal To, At Most, At Least.
+  - Only run on models whose output limit ≥ target; if smaller, set the word target to approximate the model’s claimed max token limit (see Evaluation Details for token→word approximation).
+- What to record:
+  - Per-instance LD and LS; per-model averages.
+- Correspondence:
+  - E.3, Table 14 (extended lengths).
+
+3) Discrepancy vs claimed maximum output length
+- Procedure:
+  - Construct an evaluation with At Least and a fixed constraint of 32,768 words.
+  - For models whose claimed maximum output length < 32,768 tokens, set the instruction’s word target to approximate the model’s claimed maximum token capacity (per-model token→word conversion).
+  - Exclude Summarization category (insufficient long inputs for this setting).
+  - Total instances: 320.
+  - Manually filter and drop outputs that are largely repeated loops (see Implementation Notes for a quick triage heuristic).
+- What to record:
+  - For each model, distribution of achieved word counts and token counts.
+  - Top-10% and top-25% longest output word and token counts.
+  - Differences vs instructed word length and vs claimed maximum tokens.
+- Correspondence:
+  - Section 5.2, Figure 4 (top/bottom).
+
+4) Length awareness: self-reported word count
+- Procedure:
+  - Take the same prompts as in the main evaluation but add this instruction at the end of [Requirement]:
+    - “At the end of your response, include the actual total word count of your response, formatted as [WORD COUNT]: a number, where ‘a number’ is the actual number of words you generated.”
+  - Use constraint set {128, 256, 512, 1024, 2048, 4096, 8192}.
+- What to record:
+  - Actual word count (normalized).
+  - Extracted “[WORD COUNT]: N” integer (last occurrence if multiple).
+  - For each model, fit log–log least-squares regression: log(y) = a·log(x) + b with y = output word count, x = instructed length; fit separately for “real” and “reported” counts.
+- Correspondence:
+  - Section 5.3, Figure 5 and Figure 12, Appendix F.1.
+
+5) Marker-based length monitoring
+- Procedure:
+  - Add to the prompt (after [Requirement]):
+    - “Whenever you output 100 words, you must immediately follow with a [SPECIAL TOKEN] as a marker.”
+  - Use constraint set {512, 1024, 2048, 4096, 8192}.
+  - After generation, keep only outputs containing ≥1 marker. For per-model statistics, exclude models with <20 valid samples.
+- What to record:
+  - Positions (in words) of each “[SPECIAL TOKEN]” within the output, intervals between consecutive markers, and normalized positions (0–1 along text).
+  - ECDF across segments (five equal-length bins of the output).
+- Correspondence:
+  - Appendix F.2, Figures 13–14.
+
+6) Input-length sensitivity on Summarization
+- Procedure:
+  - Select a subset of Summarization inputs and create three truncated variants per sample:
+    - Short: <1000 words.
+    - Medium: 1000–5000 words.
+    - Long: >5000 words.
+  - Keep the same [Instruction]/[Requirement] pattern and length constraints as in the main evaluation for the chosen items.
+- What to record:
+  - Per-variant LS across constraints; per-model deltas between bins (Short→Medium→Long).
+- Correspondence:
+  - Section 5.3, Figure 6, Appendix G.2.
+
+7) Lazy generation strategies detection
+- Procedure:
+  - Run main Equal To setting and post-process outputs with a rule-based detector:
+    - If output contains any refusal keyword (Table 16), label as “flagged.”
+    - If flagged and total words < 100 → Direct Refusal.
+    - If flagged and total words ≥ 100 → Refusal with Attempt.
+  - Aggregate proportions by constraint bucket (≤1024, 2048, 4096, 8192).
+- What to record:
+  - Proportions of Direct Refusal, Refusal with Attempt, and non-flagged outputs, per constraint and per model.
+- Correspondence:
+  - Appendix H (H.1–H.4), Figure 24.
+
+8) Language analysis (English vs Chinese)
+- Procedure:
+  - From the main evaluation, split results by language.
+  - Compute mean LD and LS per constraint and language.
+  - Additionally tabulate signed LD per language to show over/under-generation.
+- What to record:
+  - Per-language mean LS curves; per-language mean LD (signed); per-constraint differences.
+- Correspondence:
+  - Figure 3 (Right), Appendix G.3, Table 15, Figures 22–23.
+
+9) Supplementary datasets: LABEL and REFACTOR
+- Procedure:
+  - LABEL: run Equal To with constraints {2, 4, 8} words on the fixed-length label tasks (News/Review/Tweets/Email); standard two-part prompt templates (see Implementation Notes).
+  - REFACTOR: run Equal To with constraints {16,…,8192} on translate/style transfer/paraphrase subtypes provided; use supplied instructions; no added explanations allowed beyond the transformation requirement.
+- What to record:
+  - LD and LS per instance; per-constraint, per-model means.
+- Correspondence:
+  - Appendix C.1–C.2, J (Figure 25–26).
+
+10) Generation quality under length constraints (LLM-as-a-judge)
+- Procedure:
+  - Sample 200 English Equal To items spanning the full constraint range {16,…,8192}.
+  - For each generated output, call a judge with the prompt in K (JSON output required), explicitly instructing the judge to ignore length compliance.
+  - Record integer scores [0–10] for: Relevance, Accuracy, Coherence, Clarity, Breadth and Depth; compute their average.
+- What to record:
+  - Per-sample and per-model dimension scores; per-constraint trends; correlation between actual length and average quality (Pearson r and p-value).
+- Correspondence:
+  - Section K.1–K.2, Figures 27–29, Table 17.
+
+11) Output-format constraints (Markdown/HTML/LaTeX)
+- Procedure:
+  - Use Equal To constraints {128, 256, 512, 1024, 2048}.
+  - Add format constraint to [Requirement] exactly as:
+    - Markdown: “Your output must be in Markdown format. Use ## for headings, - for lists, and standard Markdown syntax for formatting.”
+    - HTML: “Your output must be in HTML format. Use <h2> for headings, <ul><li> for lists, and standard HTML tags for formatting.”
+    - LaTeX: “Your output must be in LaTeX format. Use \section{} for headings, \begin{itemize}\item … \end{itemize} for lists, and standard LaTeX commands for formatting. Do not include preamble or document class.”
+  - After generation, strip format tokens (see Evaluation Details) and measure semantic word counts.
+- What to record:
+  - LD and LS per instance; deltas relative to “no-format” runs.
+- Correspondence:
+  - Appendix N, Tables 20–22.
+
+12) Optional interpretability (EoS dynamics; open-source only)
+- Procedure:
+  - For models exposing logits, during generation log the EoS token’s logit and probability at each step while only varying the instructed length among {16,…,8192}.
+  - Record final output length per run.
+- What to record:
+  - For each constraint: final token count; mean EoS logit/prob trajectory; scatter of EoS value vs length.
+- Correspondence:
+  - Appendix M.1, Figure 31.
+
+13) Optional “pre-planning” intervention (post-training style inference-time control)
+- Procedure:
+  - Creative Generation, Equal To 8192 words.
+  - Prepend a short outline section before writing, then write to target length. Example preface: “First, draft a detailed outline with section budgets (in words) summing to 8192; then write the full text following the outline.”
+  - Compare to baseline prompts without pre-planning.
+- What to record:
+  - LS and LD with/without pre-planning.
+- Correspondence:
+  - Appendix M.3, Table 19.
+
+14) Optional base-model in-context test at 8192 (if base checkpoints available)
+- Procedure:
+  - Equal To 8192 words; use minimal exemplars that demonstrate length-following in the same style; no RLHF/safety layers.
+- What to record:
+  - Average length, refusal rates by type, LS/LD.
+- Correspondence:
+  - Appendix M.2, Figure 32.
+
+
+## Evaluation Details
+
+- Output length normalization (unified counter):
+  - Compute length as: English words + Chinese characters.
+  - Chinese characters: count Unicode in [\u4e00-\u9fff].
+  - English words: regex \b[a-zA-Z0-9’]+\b (includes contractions and digits).
+  - Exclude newlines and tabs from counting.
+  - For mixed-language outputs, sum both components.
+
+- Length Deviation (LD):
+  - LD = (L_output − L_constraint) / L_constraint.
+  - For Equal To summaries, also compute mean absolute LD across constraints.
+  - For reporting per E.1:
+    - At Most: set LD = 0 whenever L_output ≤ L_constraint.
+    - At Least: set LD = 0 whenever L_output ≥ L_constraint.
+
+- Length Score (LS):
+  - With k1 = 5, k2 = 2.
+  - Equal To (LSE):
+    - if LD < 0: LSE = 100 × e^(k1·LD)
+    - else:      LSE = 100 × e^(−k2·LD)
+  - At Most (LSM):
+    - if LD < 0: LSM = 100
+    - else:      LSM = 100 × e^(−k2·LD)
+  - At Least (LSL):
+    - if LD < 0: LSL = 100 × e^(k1·LD)
+    - else:      LSL = 100
+  - Aggregate LS by arithmetic mean over instances.
+
+- Empty outputs:
+  - Exclude from LS/LD aggregates; record empty-output rate.
+
+- Percentiles in max-length study:
+  - For each model, compute top-10% and top-25% longest outputs by word count and by token count (see tokenization).
+  - Report instructed word target, top-10%/25% achieved words/tokens, and difference vs claim.
+
+- Token counts (for max-length comparisons):
+  - Use provider tokenizers for proprietary models; Hugging Face tokenizer for open-source.
+  - When only tokens are available, approximate words for instruction setting as words ≈ tokens / 1.33 [uncertain] (specify the exact ratio actually used when running; maintain consistency across models).
+
+- Self-reported count extraction:
+  - Regex pattern: \[WORD COUNT\]\s*:\s*(\d+)\b; take the last match if multiple; mark missing if not found.
+  - Fit “Real Fit” and “Reported Fit” with numpy.polyfit on log-transformed (x = instructed length, y = count), then back-transform.
+
+- Marker analysis:
+  - Find all “[SPECIAL TOKEN]” (exact string match).
+  - Compute:
+    - Intervals: word counts between consecutive markers.
+    - Relative positions: cumulative position / total length.
+    - ECDF: proportion of markers per 20%-wide segment.
+
+- Language split:
+  - Compute per-language mean LS and mean signed LD per constraint; also compute overall per-language averages.
+
+- Lazy strategies:
+  - Keyword lexicons (Table 16) for EN/ZH.
+  - Classification:
+    - Direct Refusal: contains any keyword and total words < 100.
+    - Refusal with Attempt: contains any keyword and total words ≥ 100.
+  - Aggregate proportions per constraint and per model.
+
+- Quality judging (K.1/K.2):
+  - Judge prompt must return valid JSON with integer scores in {0,…,10}.
+  - Record per-dimension integers and their average; compute Pearson r between actual word count and average score (report r and p-value).
+  - For scatter plots, use log-scaled x-axis for length.
+
+- Format-constrained counting:
+  - Markdown: strip leading header marks (#, ##, …), list markers (-, *, + at line start), inline syntax (*, **, _, __, `…`, [](...)) before counting.
+  - HTML: strip all tags via <[^>]+> and decode common entities before counting.
+  - LaTeX: strip control sequences beginning with backslash (e.g., \\[a-zA-Z]+(\{[^}]*\})?), environments \begin{…}…\end{…}, and math delimiters ($…$, \[ … \]) before counting.
+  - After stripping, apply unified counter.
+
+- Aggregation:
+  - Per-instance → per-condition (mean over instances within same model × task × control × constraint) → per-model (mean over tasks/controls/constraints, as specified per figure/table).
+  - For Table 1: report mean LS per control; for Equal To also report mean absolute LD.
+
+- Repetition filtering for max-length study:
+  - Manual review recommended; optionally flag outputs with high repetition ratio: unique 5-gram ratio < 0.2 [uncertain] or compression ratio (gzip_len / raw_len) < 0.2 [uncertain] for triage; then inspect.
+
+
+## Implementation Notes
+
+- Prompt templates (must be used verbatim for [Instruction]/[Requirement]):
+  - QA:
+    - [Instruction] Answer this question: {{content}}
+    - [Requirement] Your answer must be {{control_method}} {{length_constraint}} words long.
+  - Summarization (choose subtype label accordingly: Encyclopedia/Report/Public Discourse/Academic Article/Book/Dialogue):
+    - [Instruction] Summarize this {{subtype}}: {{content}}
+    - [Requirement] Your summary must be {{control_method}} {{length_constraint}} words long.
+  - Reasoning (Deductive/Inductive/Abductive/Analogical/Cause and Effect/Probabilistic):
+    - [Instruction] {{subtype-specific instruction}}: {{content}}
+    - [Requirement] Your reasoning must be {{control_method}} {{length_constraint}} words long.
+  - Creative Generation (Social Commentary/Prompt-based Creative/Script Expansion/News Writing/Story Expansion/Blog Writing):
+    - [Instruction] {{subtype-specific instruction}}: {{content}}
+    - [Requirement] The output must be {{control_method}} {{length_constraint}} words long.
+  - LABEL:
+    - News: [Instruction] You are given a news article excerpt: {{content}}
+      [Requirement] Label the article based on its topic. The label must be {{control_method}} {{length_constraint}} words long.
+    - Review: [Instruction] Here is a user review: {{content}}
+      [Requirement] Provide a label to the review accordingly. The label must be {{control_method}} {{length_constraint}} words long.
+    - Tweets: [Instruction] You are given a short text from a tweet: {{content}}
+      [Requirement] Provide a label that best represents the tweet. The label must be {{control_method}} {{length_constraint}} words long.
+    - Email: [Instruction] The following text is an excerpt from an email: {{content}}
+      [Requirement] Provide a label that best categorizes it. The label must be {{control_method}} {{length_constraint}} words long.
+
+- Order of operations:
+  - Do not include any counting aids in main evaluation (no [WORD COUNT], no [SPECIAL TOKEN]).
+  - Run main benchmark first; then extended constraints; then specialized diagnostics (self-report, markers); finally, format-constrained and judge-based quality assessments.
+
+- Model runtime configuration:
+  - Enforce high max_new_tokens; many APIs silently cap outputs—log provider token usage and stop_reason.
+  - Reasoning modes: set to medium effort if available; keep temperature at 0.8 only for non-reasoning.
+
+- Output parsing:
+  - Strip trailing assistant signatures and safety messages before counting only if clearly outside task (but keep the full raw text archived).
+  - For judge JSON, use robust parsing with a fallback sanitizer; if malformed, ask the judge to reformat JSON only (no rescore), preserving the original rationale and numbers.
+
+- Tokenization variability:
+  - Token counts vary by tokenizer; record which tokenizer was used per model and keep conversions consistent across the entire run.
+
+- Language unit pitfalls:
+  - Chinese must be measured in characters, not words. Mixed-language content is allowed; rely on the unified counter.
+  - Some models overuse punctuation or emojis; these are counted as English tokens only if matched by the regex (most will not be), but Chinese punctuation is not counted as characters by the Unicode range.
+
+- Refusals and premature stops:
+  - Do not reprompt for compliance in the main benchmark; the goal is to measure first-try adherence.
+  - Log refusal classification and keep the original output text.
+
+- Repetition filtering in max-length study:
+  - The paper specifies manual filtering. If using heuristics to triage, document thresholds and provide a manual review pass for all flagged cases.
+
+- Input truncation (Summarization sensitivity):
+  - Preserve paragraph boundaries when possible; truncate by word count target within the nearest sentence boundary to avoid dangling fragments.
+
+- Regression fits (length awareness):
+  - Use log base e; report fitted a, b and R²; if any zero-length outputs occur, exclude from the regression fit and log as missing.
+
+- Resource management:
+  - Ultra-long generations are costly. If budget-limited, prioritize: main benchmark → length awareness (self-report) → max-length discrepancy → markers → input-length sensitivity → supplementary sets → format constraints → judge evaluation.
+
+- Optional analyses caveats:
+  - EoS logit/prob requires access to logits; skip for APIs that do not expose them.
+  - Base-model in-context evaluation requires base checkpoints; otherwise, omit.
+
+- Safety-triggering phrases:
+  - The lazy-strategy detector keywords may also be invoked by alignment systems; treat them as behavioral markers rather than hard failures and keep both flagged and unflagged results in aggregates as per Appendix H.
+
+- Randomization and seeds:
+  - Shuffle instance order per model; set a fixed random seed for selection/truncation steps to ensure reproducibility.

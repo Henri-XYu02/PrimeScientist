@@ -1,0 +1,305 @@
+You are a research agent. Conduct research and experiment about the question: "Does chain-of-thought (CoT) prompting truly enable large language models (LLMs) to learn generalizable algorithmic reasoning abilities, or does it merely rely on highly specific, pattern-matching prompts?"
+
+You have access to the following resources:
+
+Models:
+- gpt-3.5-turbo and gpt-4-turbo via the provided inference utilities
+- You can call these models using: from utils.llm_inference import LLMInference
+- API key is provided with the LLMInference initialization function
+- You can use the batch_generate() function to speed up the experiment
+- Computational budget: 10000 API calls per model
+
+Datasets:
+You must programmatically generate all data needed for this study. Your generated data should allow you to:
+
+- Evaluate classical planning abilities in a Blocksworld-style domain.
+- Evaluate synthetic reasoning abilities on at least three distinct tasks, such as:
+    - Parity tracking (e.g., coin flip sequences),
+    - String manipulation (e.g., letter extraction/concatenation from words),
+    - Multi-step arithmetic (e.g., simplifying arithmetic expressions).
+You must define the formats, generators, and difficulty ranges yourself, but they should satisfy the following high-level requirements.
+
+1. Blocksworld Planning Tasks
+
+Design a simple Blocksworld-like environment where:
+- There are multiple blocks that can be stacked on top of each other or placed on a table.
+- Each instance is described by:
+    - An initial configuration of blocks,
+    - A goal configuration of blocks.
+
+The solution to an instance is a sequence of valid actions (a plan) that transforms the initial state into the goal state.
+
+You must:
+
+Create a procedural generator that can produce many independent problem instances.
+Ensure you can vary problem complexity, for example by:
+Changing the number of blocks,
+Varying how entangled or simple the stacks are,
+Including both “easier” and “harder” subclasses of problems (e.g., all blocks on the table vs. arbitrary stacks).
+
+Define a machine-checkable criterion to determine whether a model-produced plan is valid and achieves the goal (e.g., by simulating actions or using a simple state-transition checker you implement).
+
+2. Synthetic Reasoning Tasks
+
+You must design and generate at least three families of synthetic reasoning tasks. Each family should:
+Be scalable in difficulty (e.g., by increasing length, depth, or number of operations).
+Have a clear, unambiguous ground-truth answer that you can compute algorithmically when generating the data.
+Examples of suitable task families include:
+
+a. Parity / State-Tracking Task
+Natural-language description of a sequence of operations (such as flipping or not flipping a coin).
+The answer depends on composed effects of all operations (e.g., whether the coin ends up heads or tails).
+Difficulty control: number of operations or steps in the description.
+
+b. String Manipulation Task
+Instructions to transform a list or phrase of words into a target string (e.g., extracting certain letters and concatenating them).
+Difficulty control: number of words, complexity of the transformation rule.
+
+c. Multi-step Arithmetic Task
+Parenthesized arithmetic expressions over small integers using basic operators.
+The correct answer is a number that you can compute programmatically.
+Difficulty control: number of operations, level of nesting, or total expression length.
+You are free to design the exact rules, templates, and difficulty scales, as long as they support a systematic study of:
+Increased reasoning depth / complexity, and Generalization across related but non-identical input patterns.
+
+
+Please design and execute experiments to investigate this research question. Document your experimental plan, run **FULL** experiments, and provide conclusions at different levels of detail.
+
+---
+
+## Experimental Design
+
+1) Blocksworld: Intended-Distribution Generalization (Figure 2; Sections 4–5.1)
+- Procedure
+  - Prompts to compare (single-pass; temperature 0 unless noted otherwise):
+    - Direct I/O baseline (no examples).
+    - Zero-shot CoT: append “Let’s think step by step.”
+    - Progression Proof CoT (PDDL-agnostic, domain-general): 2-shot with action-by-action state annotations (use Appendix A.6.2 template).
+    - Blocksworld Universal Algorithm CoT (domain-specific): 2-shot showing “tear down to table, then build up” with annotated steps (Appendix A.6.3 template).
+    - Stacking CoT (problem-class-specific: table-to-stack only): 2-shot with bottom-up stacking thoughts (Appendix A.6.4 template).
+    - Lexicographic Stacking CoT (particular syntactic subset): 2-shot specialized to lexicographic-prefix goals (Appendix A.6.5 template).
+  - Instance generation per prompt’s intended class:
+    - For general prompts (Direct, Zero-shot CoT, Progression Proof, Universal Algorithm): random initial configurations with arbitrary stacks; random goals (single or multiple stacks). Scale by number of blocks n.
+    - For Stacking and Lexicographic Stacking: table-to-stack only; initial state: all blocks on table and clear; goal: a single target stack of length n. For lexicographic: goal literal order is A, AB, ABC, … prefix.
+  - Complexity schedule: for each n in {3, 4, …, 20}. For each n, sample [40; uncertain] instances consistent with the prompt’s intended class.
+  - Input format: prepend “Domain Information” block (Appendix A.6.1) for planning prompts that require it; then provide the prompt variant with the appropriate 2-shot examples (2- and 3-block examples), followed by the [STATEMENT] block describing initial predicates and goal predicates, and the required output format ([THOUGHTS] if applicable and [PLAN] … [PLAN END]).
+  - Record
+    - Full raw model output.
+    - Extracted plan (normalized action list).
+    - Executability and goal-satisfaction booleans from checker.
+    - Plan length.
+    - Any parsing or validation errors.
+  - Notes
+    - Each prompt’s 2-shot examples must be kept fixed across all test instances.
+    - Do not re-prompt on invalid plans; count as failure.
+    - Temperature 0; max_tokens large enough to include plan and intermediate thoughts ([uncertain], use ≥512).
+  - Correspondence: Figure 2; Sections 4–5.1.
+
+2) Blocksworld: Cross-Prompt on Table-to-Stack (Table 1; Section 5.2; Figure A.1.1)
+- Procedure
+  - Fixed evaluation set: 261 table-to-stack instances in total. Distribute by height n ∈ {3,…,20} as evenly as possible: 14 per n (252) plus 1 extra for each of the 9 smallest n (3–11) to reach 261.
+  - Prompts to compare:
+    - Direct I/O baseline (no examples).
+    - Zero-shot CoT.
+    - Domain-Specific n-shot (2-shot; examples from arbitrary Blocksworld, not necessarily table-to-stack).
+    - Progression Proof CoT (2-shot; Appendix A.6.2).
+    - Blocksworld Universal Algorithm CoT (2-shot; Appendix A.6.3).
+    - Problem-Class-Specific n-shot (2-shot; examples drawn from table-to-stack).
+    - Stacking CoT (2-shot; Appendix A.6.4).
+  - All generations at temperature 0.
+  - Record as in Task 1.
+  - Correspondence: Table 1 main; Figure A.1.1 for height-wise curves.
+
+3) Blocksworld: Self-Consistency on Table-to-Stack (Table 3; Figure A.2.1; Appendix A.2)
+- Procedure
+  - Same 261 table-to-stack instances as Task 2.
+  - Prompts: Zero-shot; Zero-shot CoT; Problem-Class-Specific n-shot; Stacking CoT.
+  - For each instance and prompt: sample 5 responses with temperature 0.7; decode each; select the most frequent valid plan by majority vote. If each response is unique (common in planning), randomly choose one plan among them (uniform); ties resolved uniformly at random.
+  - Count a trial as correct only if the final selected plan is executable and reaches the goal.
+  - Record
+    - All 5 raw responses.
+    - Parsed plans for each response.
+    - Validity per response; final selected plan; tie status (unique vs majority); temperature seed.
+  - Correspondence: Table 3; Figure A.2.1.
+
+4) Synthetic: CoinFlip Length Generalization (Table 2; Figure 3; Appendix A.3, A.7)
+- Procedure
+  - Instance generation:
+    - Names list: U.S. SSA baby names with ≥50 occurrences (first names only). Sample with replacement to achieve the requested length.
+    - Length L ∈ {1,…,28}; 40 instances per L → 1120 instances total.
+    - Template: “A coin is heads up. [Name1] flips/does not flip the coin. … Is the coin still heads up?”
+    - Ground truth: parity of “flips” operations (heads if even; tails if odd).
+  - Prompts to compare:
+    - Zero-Shot (Direct; Appendix A.7 “Direct CoinFlip Prompt”).
+    - Zero-Shot CoT (append magic-phrase; Kojima et al. [26]).
+    - Manual CoT (3-shot; replicate Appendix A.7 “CoT CoinFlip Prompt,” including its exact [Instructions], [QUESTION], [Thoughts], [Answer] blocks).
+    - Incorrect CoT: use the exact same manual CoT examples but with intentionally incorrect chain-of-thought in examples (as in Appendix A.7; the examples there include mismatched [Thoughts]/[Answer]). Keep examples verbatim.
+  - Temperature 0. Responses must follow “[Answer] yes|no”.
+  - Record: full output; extracted yes/no; correctness.
+  - Optional extension: lengths up to 75 with 40 per length (2960 total) to probe farther OOD effects (Appendix A.3).
+  - Correspondence: Table 2 (CF); Figure 3 panel for CF.
+
+5) Synthetic: LastLetterConcatenation and Variants (Table 2; Figure 3; Appendix A.4, A.8)
+- Procedure
+  - Shared data source: SSA first names (same as CoinFlip).
+  - Instance sets (disjoint):
+    - LLC: “Take the last letters of each word in ‘W1 W2 … Wk’ and concatenate them.” k ∈ {1,…,20}, 40 per k → 800 instances.
+    - LVC: same word distributions, but “Take the last vowel of each word … concatenate.”
+    - FLC (Foom Letter): “Produce a new string: the 1st letter of 1st word, 2nd letter of 2nd word, … If nth word has < n letters, insert ‘0’.”
+  - Prompts to compare (match Table 2 availability):
+    - Zero-Shot (Direct; Appendix A.8 “Direct LastLetterConcatenation Prompt”).
+    - Zero-Shot CoT [26] (not used for LVC/FLC in Table 2 → mark as N/A).
+    - Manual CoT (3-shot; Appendix A.8 “CoT LastLetterConcatenation Prompt” and corresponding LVC/FLC templates in A.8).
+    - Incorrect CoT for LLC only: reuse Appendix-style examples with incorrect [Thoughts] but correct [Answer] in examples (as provided for CoinFlip; for LLC, craft analogously; [uncertain] exact incorrect-CoT examples for LLC not given—document and fix a single incorrect-CoT example set and reuse across all runs).
+  - Temperature 0. Output must follow “[Answer] <lowercase string>”.
+  - Record:
+    - Exact-match accuracy.
+    - Levenshtein distance (edit distance) per sample.
+    - Additional syntactic diagnostics: character-set match (set(pred)==set(gold)); multiset (sorted chars) equality.
+  - Correspondence: Table 2 (LLC, LVC, FLC); Figure 3 panels for letter tasks.
+
+6) Synthetic: Multi-step Single-Digit Arithmetic (Table 2; Figure 3; Appendix A.5, A.9)
+- Procedure
+  - Expression generator:
+    - Operators: +, -, *, / (integer division); operands: integers 1–9.
+    - Parenthesized binary expression trees with linearized “innermost-first” reducibility.
+    - Constraint: every intermediate and final result must be in 1–9; exclude zero; disallow negative results; for division, enforce exact divisibility (a/b ∈ {1,…,9}); for subtraction ensure minuend ≥ subtrahend and result ∈ {1,…,9}.
+    - Length K = number of operations ∈ {1,…,29}; 40 per K → 1160 total.
+  - Prompts to compare:
+    - Direct (Appendix A.9 “Arithmetic Direct Prompt”).
+    - CoT with explicit [Thought i] and [Intermediate Answer i] per step (Appendix A.9 “Arithmetic CoT Prompt”).
+    - AE (explicitly single-digit): Direct + reminder “Remember: the final answer and all intermediate answers will be single digit numbers.” (Appendix A.9 “Arithmetic Explicitly One-Digit Direct Prompt”).
+  - Temperature 0. Output after “[Answer]” must be a single digit 1–9.
+  - Record:
+    - Exact-match accuracy.
+    - Raw outputs, all [Intermediate Answer i] (if present).
+    - Optional: number of steps produced vs expected K.
+  - Correspondence: Table 2 (Arithmetic, AE); Figure 3 arithmetic panel.
+
+
+## Evaluation Details
+
+- Blocksworld plan validation
+  - State representation:
+    - Predicates over blocks: on(x,y), ontable(x), clear(x), holding(x); handempty.
+  - Initial state and goal:
+    - Parsed directly from [STATEMENT] text (deterministic generation).
+  - Action parsing (case-insensitive; tolerate optional “the” and punctuation; accept line-number prefixes):
+    - pick up X
+    - put down X
+    - unstack X from on top of Y
+    - stack X on top of Y
+    - Normalize block tokens to uppercase single letters [A–Z].
+  - Transition function:
+    - pick up x: preconditions ontable(x) ∧ clear(x) ∧ handempty; effects: ¬ontable(x), holding(x), ¬handempty.
+    - put down x: preconditions holding(x); effects: ontable(x), clear(x), ¬holding(x), handempty.
+    - unstack x from y: preconditions on(x,y) ∧ clear(x) ∧ handempty; effects: ¬on(x,y), holding(x), clear(y), ¬handempty.
+    - stack x on y: preconditions holding(x) ∧ clear(y); effects: on(x,y), ¬clear(y), ¬holding(x), handempty.
+    - Invariants: at most one held block; mutual exclusivity maintained by checking preconditions.
+  - Goal check: all goal literals must be true in final state.
+  - Metrics:
+    - Per-instance executable = all actions’ preconditions satisfied in sequence.
+    - Goal-reached = goal satisfied after final action.
+    - Correct = executable ∧ goal-reached (boolean).
+    - Aggregate accuracy = mean over instances; per-n curves computed by grouping on n.
+  - Edge cases:
+    - Any unparsable action → executable = False.
+    - Extra text inside [PLAN] ignored; only recognized action lines are applied in order.
+    - If model omits [PLAN]/[PLAN END], attempt to recover by scanning between first “[PLAN” and next “]” occurrence; if none, mark as failure.
+
+- CoinFlip scoring
+  - Normalize output:
+    - Extract token following “[Answer]”; strip spaces/punctuation; lowercase; accept exactly {“yes”, “no”}. If tag missing, use last occurrence of “yes” or “no” in output; if multiple, take the last.
+  - Gold computation: (count of “flips” mod 2 == 0) → “yes”; else “no”.
+  - Metric: accuracy = mean(correct); per-length curves and overall.
+
+- String tasks (LLC/LVC/FLC)
+  - Normalize prediction:
+    - Extract after “[Answer]”; strip quotes/spaces; lowercase a–z and ‘0’ for FLC.
+  - Gold construction:
+    - LLC: last character of each word; join; lowercase.
+    - LVC: scan each word right-to-left for last vowel in set {a,e,i,o,u}; if none exists, gold is [uncertain] (exclude at generation time to avoid empties).
+    - FLC: for i-th word, take i-th character (1-indexed) if exists else ‘0’; join.
+  - Metrics:
+    - Exact-match accuracy.
+    - Levenshtein distance d(pred, gold) using python-Levenshtein or editdistance; report mean per-length and overall.
+    - Character-set equality: set(pred) == set(gold).
+    - Multiset equality: sorted(pred) == sorted(gold).
+  - Aggregation: per-length and overall means; also report distribution of distances.
+
+- Arithmetic scoring
+  - Normalize:
+    - Extract single integer token after “[Answer]”; strip; require 1–9; if outside or non-integer → incorrect.
+  - Gold: evaluate expression with integer arithmetic respecting parentheses; ensure all intermediates were vetted by generator; final in 1–9.
+  - Metrics:
+    - Exact-match accuracy; per-K and overall.
+    - Optional diagnostics: count of [Intermediate Answer i] produced; monotonicity (non-increasing K mismatch).
+  - Note: Do not score intermediate answers for correctness (LLM may choose a different admissible reduction order).
+
+- Self-consistency aggregation (planning)
+  - For each instance:
+    - Parse/validate each of 5 samples.
+    - Majority vote over normalized plan strings; if multiple identical plans tie for first, choose randomly among them; if all unique, pick one uniformly at random.
+    - Score correctness on the selected plan.
+  - Report: accuracy; fraction of instances with a unique majority; mean number of distinct plans/sample.
+
+- General aggregation order
+  - Per-sample correctness.
+  - Aggregate by complexity bin (n in Blocksworld; length in synthetic).
+  - Overall averages computed as unweighted means over all instances in the set.
+
+
+## Implementation Notes
+
+- Prompt templates and delimiters (must match paper appendices)
+  - Use the exact bracket tags: [Instructions], [STATEMENT], [PLAN], [PLAN END], [THOUGHTS] (or [Thought i] / [Intermediate Answer i]), [QUESTION]/[Question], [Answer].
+  - Planning “Domain Information” preamble: include verbatim the action list and restrictions from Appendix A.6.1 before the examples for prompts that rely on it.
+  - Progression Proof CoT: supply 2 worked examples exactly in the style of Appendix A.6.2 (annotate “Current State/Action/Reason/Resulting State” for each step).
+  - Blocksworld Universal Algorithm CoT: 2 annotated examples following Appendix A.6.3 (explicit “tear-down then build-up” thoughts, then [PLAN]).
+  - Stacking CoT: 2 bottom-up table-to-stack examples as in Appendix A.6.4 (determine base, then place next block).
+  - Lexicographic Stacking CoT: 2 examples as in Appendix A.6.5 (A on B; then A on B on C on D), with concise “pick up/stack” sequence.
+  - CoinFlip prompts: use Appendix A.7 “Direct” and “CoT CoinFlip Prompt” verbatim, including their example [Thoughts]/[Answer] pairs (note that examples intentionally contain mismatches).
+  - LLC/LVC/FLC prompts: use Appendix A.8 direct and CoT templates; ensure instruction that after [Answer] only the lowercase string is allowed; for LVC include “vowel is one of a,e,i,o,u, NOT y.”
+  - Arithmetic prompts: use Appendix A.9 for Direct, CoT (with numbered [Thought i] and [Intermediate Answer i]), and AE (“Remember: … single digit numbers”).
+
+- Ordering/curricula
+  - For each prompt variant, keep the exact same 2-shot examples across all test instances to avoid confounds.
+  - Evaluate “intended-distribution” first (Task 1), then “cross-prompt on table-to-stack” (Task 2), then self-consistency (Task 3) so that cached generations do not bias comparisons.
+  - For synthetic domains, evaluate increasing lengths; do not adapt prompts mid-run.
+
+- Parsing robustness
+  - Plans: strip numbering and bullets; accept optional “the”; use regexes:
+    - r"\bpick\s+up\s+block\s+([A-Z])"
+    - r"\bput\s+down\s+block\s+([A-Z])"
+    - r"\bunstack\s+block\s+([A-Z])\s+from\s+on\s+top\s+of\s+block\s+([A-Z])"
+    - r"\bstack\s+block\s+([A-Z])\s+on\s+top\s+of\s+block\s+([A-Z])"
+    - Make case-insensitive and allow missing “block” token: optionally capture.
+  - Answers: always extract content strictly after “[Answer]”. If absent, fallback heuristics as specified in Evaluation Details.
+
+- Generation settings
+  - Main runs at temperature 0; top_p 1.0; no frequency/presence penalties.
+  - Self-consistency: temperature 0.7; sample size = 5 as in Appendix A.2; random seed control for reproducibility.
+  - Stop sequences: none; rely on tag formatting; set max_tokens generously ([uncertain] 512–1024).
+
+- Data generation specifics
+  - Blocksworld
+    - Block names are consecutive uppercase letters starting from ‘A’.
+    - Table-to-stack goal: random permutation of the n blocks as target stack (top specified via goal literals).
+    - Arbitrary initial states: generate acyclic on-relations forming disjoint stacks over the table; ensure exactly one support per block; randomly select which are ontable; mark clear predicates for top blocks; handempty True.
+    - Goals: either single-tower or multi-tower on-literals; ensure consistency (no cycles).
+  - CoinFlip/LLC/LVC/FLC
+    - Sample words uniformly from SSA list with frequency ≥50; ensure ASCII and strip punctuation; capitalize first letter in the question, but the gold answer is lowercase.
+    - LVC: ensure every word contains at least one vowel from {a,e,i,o,u}; resample otherwise.
+  - Arithmetic
+    - Build expression trees top-down with backtracking to satisfy single-digit constraints; enforce exact division; numeric domain 1–9 at all times; exclude 0.
+
+- Pitfalls and caveats from the paper
+  - Self-consistency in planning often yields five distinct plans (Appendix A.2); implement tie-breaking exactly as random choice among top-frequency plans; log tie cases.
+  - CoT examples can bias outputs syntactically (Section 6.1); ensure evaluation includes edit distance and character-set diagnostics for string tasks.
+  - Do not retry or repair invalid plans; count as incorrect to match reported methodology.
+  - Ensure that CoT examples for narrow prompts (stacking, lexicographic) use only table-to-stack patterns; mixing arbitrary-stack examples will change the effective target distribution (Section 4).
+
+- What to store
+  - For every trial: prompt text, model name/config, seed, raw output, parsed output, gold, per-sample metrics, and any parser/validator error messages.
+  - For planning: intermediate simulation trace (state before/after each action), first failure point if any.
+  - For self-consistency: all k samples + selected majority output.

@@ -1,0 +1,211 @@
+You are a research agent. Conduct research and experiment about the question: "Can semantically equivalent adversarial perturbations to input prompts cause language models to hallucinate or produce inconsistent outputs?"
+
+You have access to the following resources:
+
+Models:
+- GPT-4o-mini, GPT-4.1 via the provided inference utilities
+- Load with HuggingFace: meta-llama/Llama-3.1-8B-Instruct
+- Load with HuggingFace: meta-llama/Llama-2-13b-chat-hf
+- Load with HuggingFace: Qwen/Qwen2.5-7B-Instruct
+- Load with HuggingFace: Qwen/Qwen2.5-14B-Instruct
+- You can call these models using: from utils.llm_inference import LLMInference
+- API key is provided with the LLMInference initialization function
+- You can use the batch_generate() function to speed up the experiment
+- Computational budget: 1000 API calls per model
+
+Datasets:
+- You should programmatically generate semantically equivalent perturbations of factual questions and knowledge-intensive prompts. Perturbation types include:
+    - Paraphrasing (rewriting the question with different wording but identical meaning)
+    - Synonym substitution (replacing key terms with synonyms)
+    - Syntactic restructuring (active/passive voice, clause reordering)
+    - Adding irrelevant context (prepending or appending benign but unrelated sentences)
+- For base questions, you may use:
+```python
+from datasets import load_dataset
+ds = load_dataset("trivia_qa", "unfiltered")
+```
+
+Evaluation Methods:
+- For each base question, compare the model's answers across all perturbations.
+- Measure consistency rate (fraction of perturbations producing the same answer).
+- Measure hallucination rate (fraction of perturbations where the model gives a confidently wrong answer).
+- Analyze which perturbation types are most effective at inducing inconsistency or hallucination.
+
+Please design and execute experiments to investigate this research question. Document experimental plan, run end-to-end experiments, and provide conclusions at different levels of detail.
+
+---
+
+## Experimental Design
+
+1. SECA open-ended MCQA hallucination elicitation
+- Procedure
+  - Data:
+    - Load the 16 MMLU subjects listed in Appendix C (Cli, Bio, Ana, Mat, CS, ML, Sec, Phy, Che, Cpy, Psy, Soc, Phi, Hi, Law, Eco).
+    - Build a filtered subset by retaining only items where every target model assigns the highest next-token probability to the correct option on the original prompt (x0). Use the exact full input template from Appendix F. Compute next-token probabilities over the four options immediately after the token “The correct answer is option:”. Keep only samples where argmax equals the gold option for all target models. Record the final filtered size (paper reports 347; your size may differ).
+  - Prompting template to the target model T (exact string, fill braces):
+    - “You are the world’s best expert in {MMLU_SUBJECT}.\nAnswer the following question and give me the reason.\n{QUESTION_PROMPT_x}\nA. {CHOICES[0]}\nB. {CHOICES[1]}\nC. {CHOICES[2]}\nD. {CHOICES[3]}\nThe correct answer is option:”
+  - Decoding settings for T: top_p = 1.0, temperature = 1.0, seed = 42.
+  - Target incorrect token y*:
+    - For each sample, compute the next-token probabilities over {A, B, C, D} under x0 and designate y* as the most likely incorrect option.
+    - Fix y* for the entire SECA search on that sample and target model.
+  - SECA loop (Algorithm 1):
+    - Initialize:
+      - Candidates = [x0, x0, x0] (N=3 copies).
+      - x_best = x0; score_best = log PT(y* | x0).
+    - Iterations:
+      - For each candidate x in Candidates, call the proposer LLM P to produce M=3 rephrasings using the instruction pool from Appendix G.
+      - Compute adversarial strength for each proposed xi: score_i = log PT(y* | xi).
+      - Keep only those xi with score_i > score_best. For these, query the feasibility checker LLM F with Appendix H to obtain SEF(xi, x0) ∈ {0,1}. Retain only those with SEF = 1.
+      - Merge all feasible xi into a pool; set Candidates to the top-N (N=3) by score_i. Update x_best to the single highest-scoring candidate among Candidates; update score_best accordingly.
+      - Stop if either:
+        - max_iteration = 30 reached, or
+        - score_best − log PT(y* | x0) ≥ termination_threshold = 1.0.
+    - Diversity control in proposer calls:
+      - Randomly sample one template from the Appendix G pools for each proposal.
+      - Enforce canonicalization and exact-duplicate filtering of proposed strings (strip, collapse whitespace, lowercase, remove trailing punctuation) before feasibility checking.
+  - Trials for ASR@K:
+    - For each sample and condition:
+      - Raw baseline: run K ∈ {1, 10, 30} independent generations with the original prompt (same decoding settings; vary seed per trial).
+      - SECA: collect up to K unique feasible candidates in descending order of score_i across the SECA run (including x_best). For each, run 1 generation.
+      - Optional GCG (baseline): for open-source targets only, run the configuration in Appendix L on a matched-size subset (218 samples); cap total candidates per sample at K.
+  - Generation and parsing:
+    - From each generation, extract the first option letter produced after the template suffix. Accepted patterns (regex, case-insensitive): r'\b([ABCD])\b', r'option\s*([ABCD])', r'^[\s"\']*([ABCD])[\).:\s]'. Use first match only.
+    - The explanation is everything after the first identified option letter token (strip leading punctuation and whitespace). If no letter is found, mark as No-Answer.
+  - Hallucination type breakdown (Figure 4b):
+    - For each adversarial prompt x and its y*, also generate an explanation conditioned on y*:
+      - Feed the same input template but append the model output prefix “ B” (or the correct letter for y*, respecting tokenizer spacing) programmatically by seeding the generated text with that letter, then continue generation for the explanation. If prefix-forcing is not available, include the literal line “The correct answer is option: {y*}.” in the user prompt and ask the model to “Provide the explanation only.” Record the explanation and run the hallucination evaluator.
+  - What to record
+    - For each sample, target model, and trial:
+      - Input prompt (x), option letter generated, explanation, raw log-prob vector over {A,B,C,D} for the first generated token (if available), y*, SEF(x, x0), PPLG(x), SCE(x), SEE(x, x0), hallucination type label.
+      - For SECA: full trace per iteration: candidate list, scores, feasibility results, x_best progression, stop reason.
+    - Aggregates per subject and overall: ASR@K, SEE, SCE, Δlog PT(y* | x) vs raw, TTR, prompt length.
+- Correspondence
+  - Table 2 (ASR@30, SCE, SEE vs baselines), Figure 3 (ASR@30 across subjects; ΔlogP objective; SCE/SEE), Figure 4a (objective progression), Figure 4b (hallucination types), Figure 4c (TTR and length).
+
+2. Evaluator agreement study
+- Procedure
+  - Build two pools:
+    - Semantic equivalence pairs: (x0, x) from SECA proposals (mix of feasible and infeasible).
+    - Hallucination cases: (input prompt, model response) pairs spanning “Factuality”, “Faithfulness”, “Other”, “None” (as judged by the LLM evaluator).
+  - Sample size per pool: [uncertain] (paper reports human comparison only; use ≥100 per pool if feasible).
+  - Collect independent annotations from two humans with scientific/engineering background; allow use of web search. Provide the exact instructions from Appendices H and I respectively.
+  - Compare LLM evaluators (F and hallucination evaluator) against each human and compute metrics.
+- What to record
+  - Per-item: LLM label(s), Human A label, Human B label.
+  - Aggregate: accuracy, precision, recall, F1, Cohen’s κ (with both humans separately).
+- Correspondence
+  - Table 3.
+
+3. Prompt property analysis
+- Procedure
+  - Compute Type Token Ratio (TTR) and prompt length for x0 and x_best:
+    - Tokenization: split on Unicode word boundaries; lowercase; drop punctuation-only tokens.
+    - TTR = (# unique tokens) / (# total tokens).
+    - Length = # total tokens.
+  - Aggregate per subject and across targets.
+- What to record
+  - Per-sample and per-subject averages and standard deviations; paired differences (SECA − Raw).
+- Correspondence
+  - Figure 4c.
+
+## Evaluation Details
+
+- Log-probability objective
+  - Given prompt x, let the first next-token distribution at the position after “The correct answer is option:” be p(· | x). Define y* ∈ {A,B,C,D}. Then:
+    - log PT(y* | x) = log p(y* | x).
+  - For APIs that return token-level logprobs, use the returned logprobs for the character token that exactly corresponds to the uppercase letter; if both prefixed-space and non-space variants exist, choose the higher-probability variant and use that consistently for all comparisons within the same model. For HF models, compute logits from the final position and apply log_softmax.
+
+- ASR@K
+  - For a given condition and sample:
+    - Success = the model outputs an incorrect option (≠ gold) and the hallucination evaluator returns either “Factuality” or “Faithfulness.”
+  - ASR@K = (1 / #samples) × Σ_i 1{∃ at least one success among the first K trials for sample i}.
+
+- Semantic Equivalence Error (SEE)
+  - SEE(x, x0) = |SEF(x, x0) − 1| ∈ {0,1}, where SEF is the feasibility checker’s binary output using Appendix H. Report per-sample SEE and the average.
+
+- Semantic Coherence Error (SCE)
+  - PPLG(x) computed with GPT-2 over x using a sliding window (stride 512 tokens if needed); SCE(x) = max(PPLG(x) − γ, 0) with γ = 60. Report mean SCE.
+
+- Hallucination type labeling
+  - Use Appendix I. Output must be exactly one of: Factuality, Faithfulness, Other, None.
+  - For success determination, positive types = {Factuality, Faithfulness}.
+
+- Δ objective vs raw
+  - For each sample, compute Δ = log PT(y* | x) − log PT(y* | x0). Aggregate as mean ± bootstrap std.
+
+- Aggregation and uncertainty
+  - Subject-level metrics: average over all items within each subject.
+  - Overall: average over the full filtered set.
+  - Report standard deviation via bootstrap with 10,000 resamples (with replacement) at the sample level. For subject-level plots, bootstrap within each subject separately.
+
+- Output normalization before scoring
+  - Option letter:
+    - Strip leading/trailing whitespace and punctuation.
+    - Uppercase; map aliases: “Option X”, “X)”, “X.”, “X:” → X.
+  - Explanation:
+    - Extract as the substring after the first recognized option letter occurrence; trim.
+
+- TTR and length
+  - Tokenization: regex \w+ over Unicode; lowercase; exclude tokens matching '^[^A-Za-z0-9]+$'.
+  - TTR = unique/total over the full question string (excluding the instruction header but including the answer options line if they were included in x by the proposer; recommended: compute on the question only to isolate rephrasing effects).
+
+- Evaluator agreement metrics
+  - Accuracy = correct / total.
+  - Precision = TP / (TP + FP), Recall = TP / (TP + FN), F1 = 2PR / (P + R). Compute for the positive class of interest (“equivalence=1” for feasibility; “any hallucination” or per-class for hallucination; match Table 3 design).
+  - Cohen’s κ with quadratic weights [uncertain] or unweighted (default). Use unweighted κ unless otherwise specified.
+
+## Implementation Notes
+
+- Feasibility and proposer prompts
+  - Use the exact instruction pools from Appendices G and H.
+  - Proposer P returns JSON: {"new_question": "…"} only. If the response deviates, reprompt up to 2 times; otherwise discard.
+  - Feasibility checker F returns JSON: {"equivalence_score": 0 or 1}. If malformed, reprompt once.
+
+- Preventing trivial leaks
+  - Do not provide y* or the gold answer letter to the proposer. The gold answer letter is passed only to the feasibility checker (as in Appendix H) to simplify equivalence judgment.
+  - Enforce: “The answer choices remain unchanged” and “The answer choices should not appear in the New Question” in proposer instruction.
+
+- Tokenization pitfalls for next-token scoring
+  - Different tokenizers may split “ A” vs “A” differently. At scoring time, compute both when available and select the higher-probability mapping once per model, then keep that choice fixed throughout all samples for that model.
+  - Always score immediately at the position after the template suffix. Do not let the model generate before scoring.
+
+- API logprobs
+  - If the API exposes logprobs for the first token, set logprobs ≥ 5 to retrieve probabilities for at least {'A','B','C','D'}. If unavailable, fallback:
+    - Open-source models: compute logits directly (preferred).
+    - Closed models without logprobs: approximate adversarial strength by the empirical frequency of y* over n = 5 short, temperature-1 generations (tie-break by PPLG(x) lower is better). Mark analyses relying on logprobs as [approximate] for such models.
+
+- Ordering and fixed y*
+  - For each sample:
+    1) Score x0 and determine y*.
+    2) Run SECA with that fixed y*.
+    3) Evaluate ASR using generated outputs (no forced y*).
+    4) For hallucination-type analysis only, generate explanations conditioned on y* (prefix-forced).
+
+- Deduplication and diversity
+  - Maintain a hash set of normalized candidate texts (strip, lowercase, collapse whitespace) to avoid redundant feasibility checks and target scoring.
+  - Randomly rotate proposer templates and styles per call.
+
+- Coherence computation
+  - Compute PPL on the question text only (recommended) for comparability across x0 and rephrasings. Use HuggingFace gpt2 (no tokenizer truncation; apply sliding window if length exceeds model max).
+
+- Regex and parsing robustness
+  - Accept only the first occurrence of an option letter. If multiple letters appear, choose the earliest one. If none, label No-Answer and count as failure for ASR.
+  - Treat outputs like “E” or out-of-set letters as incorrect but not valid (count as failure).
+
+- GCG baseline scope
+  - Due to memory and white-box assumptions, restrict to open-source targets. Use hyperparameters from Appendix L: num_steps=300, search_width=32, batch_size=32, on a matched-size subset of 218 samples. Initialize with the canonical GCG gibberish suffix; do not alter options or answer mapping.
+
+- Stopping and budgets
+  - Max iterations = 30, M = 3, N = 3, termination_threshold = 1.0 (on Δ log-prob).
+  - K ∈ {1,10,30} for ASR@K.
+  - Cache all feasibility checks and target scores; batch API calls where possible.
+
+- Randomness control
+  - Use seed=42 for all generations unless varied across K trials (then use seeds 42..(41+K)). Ensure proposer randomness via template sampling plus model stochasticity.
+
+- Subject mapping and reporting
+  - Preserve per-subject aggregation using the abbreviations in Appendix C. Report both per-subject and overall metrics.
+
+- Edge cases
+  - If proposer occasionally emits minor typos yet F judges equivalence=1, keep the sample and compute SCE via PPL; SCE > 0 highlights incoherence.
+  - If an adversarial prompt reintroduces options text into the question, reject it (violates proposer instruction) before feasibility checking.

@@ -1,0 +1,269 @@
+You are a research agent. Conduct research and experiment about the question: "What behaviors do language models exhibit when they are uncertain, and how do these fallback patterns manifest across different models and tasks?"
+
+You have access to the following resources:
+
+Models:
+- Load with HuggingFace: meta-llama/Llama-2-7b-hf
+- Load with HuggingFace: meta-llama/Llama-2-7b-chat-hf
+- Load with HuggingFace: meta-llama/Meta-Llama-3-8B
+- Load with HuggingFace: meta-llama/Meta-Llama-3-8B-Instruct
+- Load with HuggingFace: EleutherAI/pythia-6.9b
+- You can call these models using: from utils.llm_inference import LLMInference
+- You can use the batch_generate() function to speed up the experiment
+- Computational budget: 1000 API calls per model
+
+Datasets:
+- You should construct or sample questions at varying levels of difficulty and obscurity to probe model behavior at knowledge boundaries. Consider using:
+    - Well-known factual questions (high confidence expected)
+    - Obscure or recently-changed factual questions (low confidence expected)
+    - Nonsensical or unanswerable questions
+    - Ambiguous questions with multiple valid interpretations
+- You may use TriviaQA for factual questions:
+```python
+from datasets import load_dataset
+ds = load_dataset("trivia_qa", "unfiltered")
+```
+
+Evaluation Methods:
+- Categorize model responses into fallback behavior types (e.g., hedging, refusal, confident confabulation, generic responses, verbosity changes).
+- Measure the frequency of each fallback type as a function of question difficulty.
+- Compare fallback behavior patterns across different models.
+- Assess whether fallback behaviors correlate with actual answer correctness.
+
+Please design and execute experiments to investigate this research question. Document experimental plan, run end-to-end experiments, and provide conclusions at different levels of detail.
+
+---
+
+## Experimental Design
+
+1. TRIVIAFACTS (structured list; greedy)
+   - Procedure:
+     - Build a 95-question list dataset (TRIVIAFACTS) meeting:
+       - Each question asks for a finite list of common, web-salient facts; answers are short and unambiguous; verified exhaustive set per question.
+       - Limit gold answer set size to ≤10 [uncertain] while prompting for more (see below) to induce uncertainty.
+       - Ensure domain diversity (science, sports, culture, politics, geography, etc.).
+     - Prompt (no colon):
+       - "The following 25 {ITEMS_DESCRIPTION}\n 1." where ITEMS_DESCRIPTION is the question text (e.g., "colors are in the Olympic rings").
+     - Decoding: greedy (temperature=0, top-p=1, no penalties).
+     - Max new tokens: 300.
+     - Run across all available models (base and instruction-tuned variants separately).
+     - Record 1 completion per question.
+   - What to record per sample:
+     - Raw generation.
+     - Parsed list items in order (see parsing rules in Implementation Notes).
+     - Per-item label: correct, hallucination, repetition; and ending state: EOS, topic_change, bad_format.
+     - Counts: number of each label and ending state.
+   - Correspondence: Figure 2, Figure 17, Appendix B.1.
+
+2. QAMPARI (structured list; greedy)
+   - Procedure:
+     - Sample 100 questions with gold sets of size ≥3.
+     - Rephrase to: "The following 25 {CATEGORY} by {SUBJECT}:\n 1."
+     - Decoding: greedy; max new tokens 300.
+     - 1 completion per question.
+   - What to record: same as Task 1.
+   - Correspondence: Figure 18.
+
+3. FAKEQAMPARI (false-premise stress test; greedy)
+   - Procedure:
+     - From the 100 QAMPARI questions, replace subject entity with a plausible non-existent name (use an LLM or rules to produce culturally-appropriate names); manually verify non-existence and plausibility.
+     - Prompt format identical to QAMPARI.
+     - Decoding: greedy; max new tokens 300.
+   - What to record: as in Task 1; note that gold set is empty.
+   - Correspondence: Figure 3.
+
+4. Open-ended biographies (BIOGENERATION; sampling)
+   - Procedure:
+     - Use 5 popularity tiers; sample 25 entities per tier (125 total).
+     - Prompt: "The following is a bio of {ENTITY}:\n {ENTITY}"
+     - Decoding: temperature τ = 0.5; top-p = 1.0; max new tokens 512.
+     - 1 completion per entity per model.
+   - What to record per sample:
+     - Raw generation.
+     - Biography text span retained before any detected topic change.
+     - Atomic facts with FactScore (see Evaluation Details); per-fact labels: correct/hallucination/repetition; ending state.
+     - Count of atomic facts per label.
+   - Correspondence: Figure 5, Figures 34–38.
+
+5. Sampling temperature sweep on TRIVIAFACTS
+   - Procedure:
+     - Use the TRIVIAFACTS prompts from Task 1.
+     - Temperatures τ ∈ {0.0, 0.2, 0.4, 0.6, 0.8, 1.0} [uncertain exact grid]; top-p = 1.0; no repetition/frequency penalties.
+     - For each τ, sample 5 completions per question with different seeds; max new tokens 300.
+   - What to record:
+     - Raw generations; per-generation item labels and ending state.
+     - Aggregate per τ: average counts per label and ending state across 5 runs.
+   - Correspondence: Figure 6, Figures 32–33.
+
+6. Top-p sweep on TRIVIAFACTS
+   - Procedure:
+     - Use TRIVIAFACTS prompts.
+     - Fix τ = 1.0; p ∈ {0.7, 0.8, 0.9, 0.95, 0.98, 1.0} [uncertain exact grid].
+     - 5 completions per question per p; max new tokens 300.
+   - What to record: as in Task 5.
+   - Correspondence: Figures 29–31.
+
+7. “Volunteer” hallucinations ablation (remove list-size requirement)
+   - Procedure:
+     - Modify TRIVIAFACTS prompts by removing the “25” constraint and ending with a colon:
+       - "The following {ITEMS_DESCRIPTION}:"
+     - Decoding: greedy; max new tokens 300.
+     - 1 completion per question.
+   - What to record: as in Task 1.
+   - Correspondence: Figure 24.
+
+8. Abstention prompting
+   - Procedure (instruction-tuned variants):
+     - Add prefix instruction:
+       - "Complete the following list with facts you are sure of, and stop when you cannot recall additional facts"
+     - Keep TRIVIAFACTS and QAMPARI prompts unchanged otherwise.
+     - Decoding: greedy; max new tokens 300.
+     - 1 completion per question.
+   - Procedure (pretrained/base variants):
+     - Prepend 3-shot in-context prefix (exact text):
+       - "The following 25 are known moons of Mars\n 1. Phobos\n 2. Deimos\n The following 25 are the species of the main characters with a dialogue in the movie The Lion King\n 1. Lion\n 2. Warthog\n 3. Meerkat\n 4. Mandrill\n 5. Hyena\n 6. Hornbill\n The following 25 are the vegetables common in traditional greek salads\n 1. Tomato\n 2. Cucumber\n 3. Onion\n 4. Pepper\n 5. Kalamata olive\n"
+     - Then append the actual TRIVIAFACTS or QAMPARI prompt.
+     - Decoding: greedy; max new tokens 300.
+   - What to record: as in Task 1.
+   - Correspondence: Figures 25–28.
+
+9. In-sequence fallback ordering (ShiftScore)
+   - Procedure:
+     - Use outputs from Tasks 1, 5 (τ=0.5 first sample per question), and 2 as needed.
+     - For each sample, construct the ordered label sequence over produced items until the first topic_change/bad_format/EOS or until 25 items (TRIV/QAMP) or all atomic facts (BIO).
+     - Include only sequences with at least 5 unique items.
+     - Compute ShiftScore per sequence (see Evaluation Details), then perform nonparametric test vs random orderings.
+   - What to record:
+     - Per-sequence label list; ShiftScore.
+     - For each model–dataset–condition: Mann-Whitney U test statistic and p-value.
+   - Correspondence: Figure 7, Table 2; Section 6.1.
+
+10. Degeneration over length (DiversityScore)
+   - Procedure:
+     - Use BIOGENERATION on a single tier (very rare entities).
+     - For each generated biography and its Wikipedia page:
+       - Tokenize with the model’s tokenizer used for generation.
+       - For L ∈ {50, 100, 150, 200, 300, 400, 500} tokens, truncate to first L tokens and compute DiversityScore.
+     - Produce curves of DiversityScore vs tokens; include human baseline (Wikipedia).
+   - What to record:
+     - Per-sample DiversityScore at each L for model output and Wikipedia.
+     - Aggregates (mean ± std across entities).
+   - Correspondence: Figure 8.
+
+11. TRIVIAFACTS colon ablation (format sensitivity; optional)
+   - Procedure:
+     - Repeat Task 1 but add a colon to the end of each question before the "\n 1." suffix.
+   - What to record: as in Task 1.
+   - Correspondence: Figure 9.
+
+12. Pretraining checkpoint progression [optional; dependent on availability]
+   - Procedure:
+     - If intermediate checkpoints exist for any available model, run Task 1 at multiple pretraining steps and aggregate fallback breakdowns vs tokens seen.
+   - What to record: as in Task 1 plus checkpoint steps.
+   - Correspondence: Figures 4, 19–20.
+
+
+## Evaluation Details
+
+- Item/fact extraction (structured lists):
+  - Preferred pattern: lines matching r"^\s*\d+\.\s*(.+)$" captured in order following the prompt’s "\n 1.".
+  - If no numbered lines and a single long line with ≥5 commas before first newline/period, split first clause by commas as items.
+  - If multiple short lines separated by newlines, treat each non-empty line as an item.
+  - Stop extraction at the first violation (e.g., numbering/reset/blank loop) and mark ending state accordingly (see below).
+  - Normalize each extracted item by:
+    - Lowercasing; trimming whitespace; removing leading/trailing punctuation; removing articles {"a","an","the"} at token boundaries; stripping parenthetical substrings "(...)".
+
+- End-of-generation classification:
+  - EOS: generation terminated with EOS id or explicit stop from the inference backend before producing all requested items.
+  - topic_change: detection of a new prompt-like header (e.g., line starting with "The following") or restart of a numbered list unrelated to current question.
+  - bad_format: deviation from any acceptable list format that prevents continued extraction (e.g., repeated "1. 1. 1.", empty bullets, code blocks intruding).
+  - If none triggered, cap at 25 items for TRIV/QAMP/FQAMP; for BIO, stop at first detected topic change.
+
+- Labeling per item (TRIV/QAMP/FQAMP):
+  - Maintain a set of normalized items already seen in the current sample.
+  - First occurrence:
+    - Match to gold answers with token-level F1 ≥ 0.55 (micro-averaged over whitespace tokens) to label correct; allow manually curated synonym lists per question (e.g., "Southern Ocean" ~ "Antarctic Ocean").
+    - If no match, label hallucination.
+  - Subsequent occurrences of any item (exact normalized string) are labeled repetition.
+  - For FQAMP, gold set is empty, so first occurrences are hallucinations by definition.
+
+- Labeling per atomic fact (BIO):
+  - Use FactScore to:
+    - Extract atomic facts from the retained biography span.
+    - Verify each fact against the entity’s Wikipedia page using an LLM verifier [uncertain: ChatGPT-3.5] or a reproduced open-source verifier.
+  - First occurrence of a fact is labeled correct/hallucination by the verifier; subsequent identical atomic facts are labeled repetition.
+  - Record ending state (topic_change, bad_format, EOS) as above (see Implementation Notes for BIO topic-change heuristics).
+
+- Metrics and aggregation:
+  - Per-sample:
+    - Counts: correct, hallucination, repetition, bad_format, topic_change, EOS (each sample contributes at most one ending state count).
+  - Per-condition (model × dataset × decoding/prompt setting):
+    - Average counts per label/state over samples (and over 5 runs for sampling sweeps).
+    - For BIO, also report total atomic facts generated.
+  - ShiftScore:
+    - Map labels to integers: repetition=1, hallucination=2, correct=3.
+    - For an ordered label sequence f1..fn (items before ending state or cap), compute:
+      - ShiftScore = (1/(n-1)) * sum_{i=1..n-1} 1[ f_{i+1} ≥ f_i ].
+    - Statistical test vs random ordering:
+      - For each sequence, compute ShiftScore_random by sampling 1000 random permutations; collect the set of all randomized scores.
+      - Use Mann-Whitney U-test (scipy.stats.mannwhitneyu) comparing the original ShiftScore list to the pooled randomized scores; alternative='greater'.
+      - Report U statistic and p-value.
+  - DiversityScore (degeneration measure):
+    - For tokenized sequence x of length n with vocabulary V, DiversityScore(x) = |{t ∈ x}| / n (unique token ratio).
+    - Compute on model tokenization for both generated biographies and the corresponding Wikipedia text; report mean ± std across entities at each truncation length.
+
+- Output normalization edge cases:
+  - Strip Unicode accents and normalize to NFC before tokenization for F1 matching.
+  - Collapse multiple spaces to single.
+  - Remove trailing periods and list punctuation (e.g., semicolons).
+  - For hyphenated or slashed forms, split on [-/], compute F1 over resulting tokens.
+
+- Randomness control:
+  - Set seeds per run (e.g., 0..4 for 5 samples).
+  - Shuffle dataset order once with a fixed seed but do not permute within-sample ordering when computing ShiftScore.
+
+## Implementation Notes
+
+- Parsing pitfalls and remedies (structured lists):
+  - Models may emit comma-separated lists or omit newlines; apply the comma heuristic only if ≥5 commas appear early; otherwise, prefer numbered-line regex.
+  - Treat numbering resets (e.g., another "1.") after several items as topic_change if accompanied by a new "The following" header; otherwise bad_format.
+  - For infinite loops like "1. 1. 1..." or code/template insertions, stop extraction and flag bad_format.
+
+- BIO topic-change detection:
+  - Consider the biography continued if a new line starts with the subject name or pronoun; treat headings like "References", "Discography", or a new "The following..." header as topic_change.
+  - Allow moderate paragraph breaks; multiple blank lines or title-like lines indicate topic_change.
+
+- Order of operations:
+  - Primary analyses use greedy decoding; run all greedy experiments before sampling ablations.
+  - For sampling sweeps, compute per-temperature/per-p aggregates over 5 seeds before comparing trends.
+  - For abstention prompting:
+    - Evaluate base/instruction-tuned variants separately.
+    - Use the 3-shot in-context prefix for base checkpoints only; do not prepend it to instruction-tuned variants using the natural language instruction.
+
+- Answer matching:
+  - Only the first occurrence of an item/fact can be counted as correct or hallucination; every subsequent identical normalized string/fact is labeled repetition, regardless of its correctness.
+  - Maintain per-question synonym lists to avoid false negatives; expand cautiously to avoid over-crediting.
+
+- BIO FactScore dependence:
+  - The original setup uses an external LLM (ChatGPT 3.5) as verifier [uncertain]. If unavailable, replace with a retrieval + NLI pipeline, but mark deviations and expect absolute rates to differ; trends should remain.
+
+- Max generation lengths:
+  - Lists: 300 new tokens are typically sufficient for up to 25 items; if models hit the cap early, classify remaining as EOS (do not penalize as bad_format).
+  - Biographies: 512 new tokens to enable DiversityScore up to 500 tokens.
+
+- Colon sensitivity:
+  - TRIVIAFACTS: default prompts omit the colon; run a colon-added ablation to verify robustness (see Task 11).
+
+- Significance testing:
+  - For ShiftScore U-tests, include only samples with ≥5 unique items and at least 30 such samples per condition to ensure test validity [as in Appendix E.2]; otherwise, skip p-value reporting for that condition.
+
+- Decoding hyperparameters:
+  - Do not apply repetition or frequency penalties except in explicitly designed ablations (not covered here); penalties can conflate repetition reduction with other fallback shifts.
+
+- Logging artifacts:
+  - Persist raw generations, parsed items, normalization outputs, labels, endings, and random seeds.
+  - For sampling ablations, store per-seed results to allow recomputation of means/variances.
+
+- Known caveats:
+  - QAMPARI has non-exhaustive gold sets and paraphrastic variability; expect some correct-but-unmatched items to be labeled hallucinations; report this limitation where applicable.
+  - FQAMPARI demands strict abstention to avoid hallucinations; models rarely abstain—ensure manual verification that substituted entities truly do not exist.

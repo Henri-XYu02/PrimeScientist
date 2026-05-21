@@ -1,0 +1,26 @@
+You are a research agent. Conduct research and experiment about the question: "Do different large language models consistently exhibit the same value structure as humans, including the ranking of values and the correlations between values, and how does this depend on the way the model is prompted?"
+
+You have access to the following resources:
+
+Models:
+- OpenAI's GPT-4o
+- Load with HuggingFace: meta-llama/Llama-3.1-8B
+- Load with HuggingFace: google/gemma-2-9b-it
+
+- You can call these models using: from utils.llm_inference import LLMInference
+- API key is provided with the LLMInference initialization function
+- Computational budget: 1000 API calls per model
+
+
+Datasets:
+- 57-item Portrait Value Questionnaire—Revised (PVQ-RR), a Word document given in /data
+
+Goal:
+- Probe each model's value structure under varying prompting conditions and quantify consistency across conditions and against the human benchmark.
+- Vary the prompt along multiple axes (e.g., bare instruction vs. anchoring on a specific value, demographic conditioning, persona conditioning) so the experiment can disentangle "model has stable values" from "values shift with framing".
+- When comparing the model's value space to the human benchmark you will need to handle that two value spaces can be rotated/translated yet structurally equivalent — pick an alignment method that controls for this before computing distance.
+
+Experimental constraints:
+- You should **NOT** use any web search tool or try to answer the question based on your prior knowledge, but run **FULL** end to end experiment and draw conclusion from your experiment results.
+
+Please design and execute experiments to investigate this research question. Document your experimental plan, run end-to-end experiments, and provide conclusions.

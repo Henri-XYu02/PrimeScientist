@@ -1,0 +1,270 @@
+You are a research agent. Conduct research and experiment about the question: "Do large language models (LLMs) learn more coherent and grounded representations that reflect the real world (such as spatial and temporal representations) rather than just an enormous collection of superficial statistics?"
+
+You have access to the following resources:
+
+Models:
+- GPT-4o, GPT-4o-mini
+- Load with HuggingFace: meta-llama/Llama-2-13b-hf
+- You can call these models using: from utils.llm_inference import LLMInference
+- API key is provided with the LLMInference initialization function
+- You can use the batch_generate() function to speed up the experiment
+- Computational budget: 1000 API calls per model
+
+Datasets:
+
+Please design and execute experiments to investigate this research question. Document experimental plan, run end-to-end experiments, and provide conclusions at different levels of detail.
+ail.
+
+---
+
+## Experimental Design
+
+1. Layer-wise linear probing (space and time)
+- Procedure:
+  - Tokenize each entity string (possibly with a short prompt variant, see Task 3) and run a single forward pass to collect hidden states (residual stream) for all layers.
+  - For each sample, extract the activation vector at the last token of the entity mention (or the period token for the headlines variant in Task 3).
+  - For each layer ℓ, form the activation matrix Aℓ ∈ Rn×d from these vectors.
+  - Train linear ridge regression probes to predict:
+    - 2D targets for spatial datasets: latitude (deg), longitude (deg), with two separate regressors.
+    - 1D target for temporal datasets: timestamp (e.g., year as a real number).
+  - Fit separate probes for each dataset and each layer independently using the training split (see splits below).
+  - Splits:
+    - Default split: random train/test split [uncertain]%/[uncertain]%, stratified when applicable to avoid leakage (see dataset-specific notes below).
+    - Dataset-specific leakage controls:
+      - NYC: split by complex ID so all POIs belonging to a complex are in the same split.
+      - Entertainment: split by creator so all works by the same creator are in the same split.
+  - Run for all layers (0..L−1) to reproduce layer-depth curves; additionally record the 60% depth layer for downstream comparisons.
+- What to record:
+  - Raw hidden states for all layers at the target token index.
+  - Probe weights Wℓ for each layer and target dimension, and tuned λ values.
+  - Test predictions Ŷ and full per-sample metrics (R2, Spearman, proximity error).
+  - Aggregated metrics per layer and per dataset (mean and 95% CI via bootstrap over samples).
+- Correspondence: Figure 2 (layer-wise curves), Section 3.1.
+
+2. Nonlinear probe comparison
+- Procedure:
+  - Using the same activations as Task 1, at 60% layer depth only, train a one-hidden-layer MLP probe with 256 ReLU units: f(x) = W2 ReLU(W1 x + b1) + b2.
+  - Fit separate models for each dataset and target dimension, on the same train split and with the same target scaling as linear probes.
+  - Training details: minimize MSE; early stopping on a validation split [uncertain]% of the train set; optimizer [uncertain] (e.g., Adam), batch size [uncertain], epochs [uncertain] with patience [uncertain].
+- What to record:
+  - Final test R2 for linear vs MLP per dataset; also Spearman for completeness.
+  - Store trained parameters and training logs (loss curves).
+- Correspondence: Table 2, Section 3.2.
+
+3. Prompt sensitivity
+- Procedure:
+  - For each entity, create multiple prompt variants; in all cases, collect final-token activations at the entity’s last token unless otherwise noted:
+    - Empty: just the entity tokens with a BOS token.
+    - Ask-for-fact (space): “What is the latitude and longitude of <place>” (no punctuation).
+    - Ask-for-fact (time, artworks): “What was the release date of <author>’s <book>.”
+    - Disambiguation (US): “Where in the United States is <place>”
+    - Disambiguation (NYC): “Where in New York City is <place>”
+    - Random 10-token distractor: prepend 10 random tokens sampled uniformly from the tokenizer vocabulary (exclude special/control tokens).
+    - ALL CAPS: fully capitalize the full entity surface form before tokenization.
+    - Headlines period variant: append a single “.” to the headline and probe at the period token (record both last-token and period-token results).
+  - For each variant, repeat Task 1’s probing (fit on the train split, evaluate on the test split) at all layers.
+- What to record:
+  - Layer-wise R2 per prompt variant; per-sample metrics for analysis; prompts used for each sample.
+- Correspondence: Figure 3 (prompt variants), Section 3.3; Appendix Figure 8 (all models).
+
+4. Block holdout generalization
+- Procedure:
+  - For each dataset, define blocks:
+    - World: country
+    - USA: state
+    - NYC: borough
+    - Historical: century
+    - Entertainment: decade
+    - Headlines: year
+  - For each block b:
+    - Train probes on all samples not in b (across all layers, or evaluate at 60% depth for compactness).
+    - Evaluate on the held-out set b (heldout case).
+    - Separately, in the nominal setting (default split), evaluate proximity error on test samples from b (nominal case).
+  - Average metrics across all blocks with at least [uncertain] samples; skip blocks with insufficient support.
+- What to record:
+  - Proximity error per block for nominal vs heldout; report means over blocks and per-sample logs.
+  - Optional: visualize predicted vs true centroids per block (angles and offsets) to qualitatively assess relative vs absolute positioning.
+- Correspondence: Table 3, Figures 11–12, Section 4.1.
+
+5. Cross-entity generalization
+- Procedure:
+  - For each dataset, enumerate entity subtypes:
+    - World: populated places, natural places, structures.
+    - USA: cities, counties, zipcodes, colleges, natural places, structures.
+    - NYC: schools, places of worship, transit, important roads/bridges, government buildings, public housing, [others present with adequate support].
+    - Historical: occupations (grouped into high-level categories with adequate sample sizes).
+    - Entertainment: songs, movies, books.
+    - Headlines: news desks (Foreign, National, Politics, Washington, Obits).
+  - For each subtype s:
+    - Train on all samples not in s; evaluate on s (heldout).
+    - In the nominal split, compute metrics on the test portion of s (nominal).
+- What to record:
+  - Proximity error per subtype for nominal vs heldout; per-sample logs for error analysis.
+- Correspondence: Table 4, Section 4.1.
+
+6. Dimensionality reduction with PCA
+- Procedure:
+  - For each dataset and layer:
+    - Compute PCA on A_train (no centering beyond PCA’s internal centering).
+    - Project train and test activations onto the top-k principal components for k ∈ {2, 4, 8, 16, 32, 64, 128, 256, 512}.
+    - Train linear ridge probes on the k-d representations (tuning λ on the train set).
+    - Evaluate on test set for each k.
+  - Also record performance of full d-dimensional probes for comparison.
+- What to record:
+  - Test R2 and Spearman as a function of k; store PCA components, explained variance ratios, and probe weights.
+- Correspondence: Figure 4 (R2 vs k), Figure 13 (Spearman vs k), Section 4.2.
+
+7. Space/time neuron discovery and neuron-level probing
+- Procedure:
+  - Using linear probe weights w (for each target dimension) at a high-performing layer (e.g., 60% depth or best layer by validation R2):
+    - For each MLP block in that layer:
+      - Extract neuron weight vectors:
+        - Output-direction vectors v_out,j: the column vectors of the MLP’s output projection (dimension d).
+        - Input-direction vectors v_in,j: the row vectors of the MLP’s input projection (dimension d).
+      - Compute cosine similarities cos(w, v_out,j) and cos(w, v_in,j) for all neurons j.
+    - Select top-K neurons (e.g., K=10) by cosine similarity per target dimension and per direction (input/output).
+  - Neuron-level probing:
+    - For each selected neuron vector v (normalize to unit norm), compute scalar neuron readout s = A_test v for each test sample.
+    - Compute Spearman correlation between s and the ground-truth target (latitude, longitude, or time).
+    - Repeat for each entity subtype to assess unification.
+- What to record:
+  - Cosine similarity rankings, neuron indices, Spearman per neuron and per subtype, and scatterplots of s vs target.
+- Correspondence: Figure 5, Section 5.
+
+8. Neuron interventions and ablations (causal checks)
+- Procedure:
+  - Identify one or more high-similarity “time” and “space” neurons from Task 7 with strong neuron-level Spearman.
+  - Pinning (intervention):
+    - Craft prompts:
+      - Time: “<media> by <creator> was written in 19” (for 1900s) or a parallel “20” prompt for 2000s cases; choose examples where next token disambiguates a decade/year digit.
+      - Space: prompts that lead to tokens indicating region (e.g., “The tallest mountain in ” might not be ideal; instead use contexts where specific geographic-category tokens are likely next; [uncertain] exact templates).
+    - During forward pass, at the chosen layer, overwrite the neuron’s post-activation value (just before the output projection) with a scalar pinned value α across all positions (or at entity-token positions only). Sweep α over a range such as {μ − 3σ, μ − 2σ, …, μ + 3σ}, where μ, σ are the neuron’s empirical mean and std over the activation dataset.
+    - Record next-token probabilities for the relevant token set (e.g., digits ‘0’..‘9’ for time prompts; region tokens for space prompts).
+  - Zero ablation:
+    - For the same neurons, set activation to zero at the chosen layer and run evaluation on a held-out corpus (e.g., samples from Wikipedia containing relevant contexts or the task datasets’ prompts).
+    - Record per-token loss deltas and list contexts with largest increases.
+- What to record:
+  - For pinning: curves of next-token probabilities vs α; qualitative token shifts; baseline curves for random neurons in the same layer for comparison.
+  - For ablation: per-context loss increases; top contexts where loss increased most; aggregated impacts on downstream probe metrics if applicable.
+- Correspondence: Appendix B (Figures and Tables 5–8), Section 5.
+
+9. Visualizations of learned maps
+- Procedure:
+  - Using the best-layer linear probe:
+    - Project test activations A_test onto the learned latitude and longitude directions to obtain 2D coordinates in probe space.
+    - Color points by ground-truth block (e.g., state or continent).
+    - Optionally compute and display median predictions per block with labels.
+- What to record:
+  - 2D scatter plots of projected coordinates, annotations per block.
+- Correspondence: Figures 9–10, Section 3.1 and Appendix C.
+
+
+## Evaluation Details
+
+- Targets
+  - Spatial: latitude y_lat ∈ [−90, 90], longitude y_lon ∈ [−180, 180]. Do not clip probe predictions.
+  - Temporal: y_time is a scalar timestamp (e.g., year as real). For BCE/CE handling, convert BC years as negative (year 0 convention [uncertain]; use year 0 = 0 or 1 BCE mapping consistently across preprocessing and evaluation).
+
+- Ridge probe fitting
+  - Solve Ŵ = argminW ||Y − A W||^2_2 + λ ||W||^2_2 without an intercept term, consistent with the closed-form in the paper.
+  - Tune λ via leave-one-out cross-validation on the train set:
+    - Use efficient LOOCV with the hat matrix: for linear ridge, use diagonal H entries to compute LOO residuals cheaply (Hastie et al., 2009).
+    - Alternatively, use scikit-learn Ridge with fit_intercept=False and RidgeCV(cv=LeaveOneOut()) over a logarithmic grid λ ∈ [10^−6, 10^6] with ~[uncertain] points.
+
+- Metrics
+  - R2 (per target dimension):
+    - R2 = 1 − Σi (yi − ŷi)^2 / Σi (yi − ȳ)^2, computed on the test set.
+    - For spatial datasets, report the mean of R2 over latitude and longitude; also store them individually.
+  - Spearman rank correlation:
+    - Use scipy.stats.spearmanr on (ŷ, y) pairs.
+    - For spatial datasets, report mean Spearman over latitude and longitude; also store per-dimension values.
+  - Proximity error:
+    - Define a distance function d(·, ·):
+      - Spatial: great-circle distance via haversine (radius R = 6371 km).
+        - haversine((lat1,lon1),(lat2,lon2)) = 2R arcsin( sqrt( sin^2((Δφ)/2) + cos φ1 cos φ2 sin^2((Δλ)/2) ) ).
+        - Convert degrees to radians before computation.
+      - Temporal: absolute difference |t1 − t2|.
+    - For each sample i with true target yi and prediction ŷi:
+      - Compute its prediction error ei = d(yi, ŷi).
+      - For all other samples j ≠ i, compute d(yi, ŷj).
+      - Proximity error for i is the fraction of j such that d(yi, ŷj) < ei. Ties count as 0.5 [uncertain] or exclude ties; use a consistent policy and report it.
+    - Report mean proximity error over the evaluation set, with CIs via bootstrap.
+
+- Normalization/pre-processing of outputs
+  - No clipping or angular wrapping on predicted longitude/latitude for scoring.
+  - For Spearman and R2, compute on raw degrees or years as above.
+  - For PCA:
+    - Fit PCA on training activations only; apply the learned transform to test activations.
+    - Do not whiten unless explicitly analyzing whitened effects [uncertain].
+
+- Aggregation strategy
+  - Per-sample metrics → per-block (for block holdouts) or per-subtype (for cross-entity) means → dataset-level means.
+  - For layer-wise curves, compute dataset-level metrics at each layer independently.
+  - For prompt sensitivity, aggregate by prompt condition and layer.
+
+- Statistical reporting
+  - Use nonparametric bootstrap over test samples (e.g., 10k resamples [uncertain]) to compute 95% CIs for mean metrics.
+  - For cosine similarity neuron selection, control for multiple comparisons when interpreting extreme values [uncertain] (e.g., Bonferroni or report raw values with K limited to a small number).
+
+
+## Implementation Notes
+
+- Activation indexing
+  - Always hook the residual stream hidden state at the final token of the entity span (exclusive of trailing punctuation), except for the headlines “period” variant where the period token index is used.
+  - Ensure BOS is present so positional indices match expectations.
+  - For possessive/disambiguation templates (e.g., “Iowa’s Dallas County” or “Stephen Kings’ It”), carefully delimit the entity span to identify the final token of the entity itself.
+
+- Prompt templates
+  - Use the exact strings as specified (including punctuation/no punctuation):
+    - Space recall: “What is the latitude and longitude of <place>”
+    - Time recall (artworks): “What was the release date of <author>’s <book>.”
+    - Disambiguations: “Where in the United States is <place>”; “Where in New York City is <place>”
+  - For ALL CAPS, uppercase the entity surface form only; do not alter the rest of the prompt.
+  - Random distractors: sample 10 non-special tokens uniformly; join with spaces; avoid subword artifacts that include leading spaces inconsistently (normalize with the tokenizer’s expected spacing rules).
+
+- Dataset preparation and leakage controls
+  - Respect the dataset-specific grouping constraints:
+    - NYC complex IDs: keep all instances of a complex in the same split.
+    - Entertainment creators: split by creator to avoid leakage across a creator’s multiple works.
+  - When constructing the datasets (if needed), apply the paper’s filters and transformations:
+    - Pageview threshold for world and entertainment datasets: ≥ 5000 over 2018–2020.
+    - USA filtering: drop cities with population < 500; zipcodes with population < 10000 (or with density > 50 and population > 2000); restrict to contiguous 48 states and DC.
+    - Disambiguation rewrites like “Iowa’s Dallas County” to avoid probing common state or country tokens at the entity end.
+  - Train/test random seed should be fixed and logged for reproducibility.
+
+- Layer selection
+  - Train probes for every layer to reproduce curves; store and highlight 60% depth for comparisons (e.g., for MLP vs linear).
+
+- PCA
+  - Fit PCA per dataset and layer on the training activations only.
+  - Cache transforms and projections to avoid repeated computation across λ grids.
+
+- Neuron extraction
+  - Architecture specifics:
+    - For MLP blocks, use both input (v_in,j) and output (v_out,j) projection vectors as candidate neuron directions to compare with probe directions.
+    - Normalize all vectors before cosine similarity.
+  - When spatial has two directions (lat, lon), select neurons separately for each; alternatively, form a combined direction w_comb = normalize(w_lat + w_lon) and repeat selection (log both approaches).
+
+- Interventions and ablations
+  - Modify activations in-place during the forward hook at the chosen layer:
+    - Pinning: overwrite the neuron’s pre-residual, post-activation value.
+    - Zero ablation: set neuron activation to zero, keeping others unchanged.
+  - For pinning ranges, derive μ and σ from the neuron’s activations on a calibration set (e.g., the training activations used for probing).
+  - For comparison, repeat pinning curves on 9 randomly chosen neurons in the same layer and plot together.
+
+- Distance computations
+  - Use haversine with stable numerics (clamp arguments to [-1, 1] before arcsin to avoid NaNs).
+  - Vectorize distance computations for proximity error, but be mindful of O(n^2) scaling; if needed, subsample the reference set for large n [uncertain], documenting any approximation.
+
+- Edge cases and pitfalls
+  - Capitalization can change tokenization; ensure the entity span indexing is recomputed after case changes.
+  - For headlines, removing or adding punctuation changes last-token boundaries; double-check the correct token index in both variants.
+  - When holding out blocks or subtypes, skip any with too few samples to yield stable estimates; document thresholds and skipped groups.
+  - Ensure that period-token probing for headlines only appends a period if there isn’t one already; avoid duplicating punctuation.
+
+- Order of operations
+  - First run baseline layer-wise linear probes with the empty prompt to establish reference curves.
+  - Next run the MLP-vs-linear comparison at 60% depth.
+  - Then run prompt sensitivity variants.
+  - Follow with robustness checks (block holdouts, cross-entity).
+  - Finally run PCA analyses and neuron discovery/causal checks.

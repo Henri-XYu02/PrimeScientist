@@ -1,0 +1,235 @@
+You are a research agent. Conduct research and experiment about the question: "Do different large language models consistently exhibit the same value structure as humans, including the ranking of values and the correlations between values, and how does this depend on the way the model is prompted?"
+
+You have access to the following resources:
+
+Models:
+- OpenAI’s GPT-4o
+- Load with HuggingFace: meta-llama/Llama-3.1-8B
+- Load with HuggingFace: google/gemma-2-9b-it
+
+- You can call these models using: from utils.llm_inference import LLMInference
+- API key is provided with the LLMInference initialization function
+
+Datasets:
+- 57-item Portrait Value Questionnaire—Revised (PVQ-RR), a Word document given in /data
+
+Prompts:
+Pick 15 questions in the PVQ-RR questionnaire and use them in the following prompt:
+- Basic prompt: This prompt mirrors the adapted instructions of the PVQ-RR questionnaire without additional modifications. The prompt is structured as follows: "For each of the following descriptions, please answer how much the person described is like you from 1 (Not like me at all) to 6 (Very much like me), without elaborating on your reasoning.".
+
+Generate a range of values, demographic description, persona(5 each) to use the following prompts to test LLM's value in these settings:
+- Value Anchor prompt: This prompt adds an anchor of value importance using identification with an item used in an additional value questionnaire: "For each of the following descriptions, please answer how much the person described is like you from 1 (Not like me at all) to 6 (Very much like me), without elaborating on your reasoning. Answer as a person that is [value]". Here “[value]” is taken from the Best-Worst Refined Values scale.
+- Demographic prompt: This prompt extends the original prompt by incorporating additional demographic details. LLMs are asked to provide ratings based on the following prompt: “For each of the following descriptions, please rate how much the person described is like you, using a scale from 1 (Not like me at all) to 6 (Very much like me), without elaborating on your reasoning. Answer as a [age]-year-old who identifies as [gender], working in the field of [occupation], and enjoys [hobby].”
+- Generated Persona prompt:  “For each of the following descriptions, please rate how much the person described is like you, using a scale from 1 (Not like me at all) to 6 (Very much like me), without elaborating on your reasoning. Answer as: [persona].”
+
+Evaluation Methods:
+- To obtain LLM rankings for a given set of LLM answers, assign a score vi to value i, where vi is the average score given to the three items measuring this value by the LLM (i.e. the average of Xi,·,·). From this score, subtract the average score given to all value items within the conversation, thus centering the data.
+- Correlation between values: normalize for the degrees of freedom of rotation and translation. Then, compute the sum of squared differences between the procrusted MDS locations of each value to the human benchmark
+
+Experimental constraints:
+- You should **NOT** use any web search tool or try to answer the question based on your prior knowledge, but run **FULL** end to end experiment and draw conclusion from your experiment results. 
+
+Please design and execute experiments to investigate this research question. Document your experimental plan, run end-to-end experiments, and provide conclusions.
+
+---
+
+## Experimental Design
+
+1. PVQ-RR block sampling with Basic prompt (ranking and correlations)
+   - Procedure:
+     - Use 15-item administrations per conversation. Each administration includes 5 distinct Schwartz values, with all 3 PVQ-RR items for each selected value (5 × 3 = 15 items).
+     - For each run, uniformly sample 5 distinct values without replacement from the 19. Ensure approximate balanced incomplete block coverage over many runs so that every pair of values co-occurs in the same administration at least N_min times (target N_min = 10; with 300 runs, expected pair coverage ≈ 17.6).
+     - Randomize item order within the 15-item list each run.
+     - Alternate questionnaire gendered forms: assign male/female versions in a 1:1 split within each condition.
+     - Temperature conditions: 0.0 and 0.7 (two independent datasets per model/prompt).
+     - Runs per condition: 300.
+     - Input format (per run):
+       - System or preamble: none required beyond the task prompt.
+       - Single user message:
+         - Instruction line: Basic prompt text (already specified).
+         - A numbered list 1..15 of PVQ items exactly as written in the PVQ-RR document, preserving pronouns for the assigned gender.
+         - Output-format hint appended after the instruction (see Implementation Notes) to enforce parseable ratings.
+   - What to record:
+     - Raw model response string.
+     - Extracted 15 integer ratings in item order; flags for out-of-range, missing, or surplus tokens.
+     - Item metadata: item_id, value_acronym, gendered form, item order index.
+     - Run metadata: random seed, temperature, model, prompt type, timestamp.
+     - Per-run per-value centered scores (see Evaluation Details).
+     - Pairwise value co-occurrence counts.
+   - Correspondence: Value rankings (Figure 2a/2b); Correlations and MDS (Figure 3, Table 1).
+
+2. PVQ-RR with Value Anchor prompt (anchoring, ranking, correlations, anchored score curve)
+   - Procedure:
+     - Same sampling, randomization, gender balance, temperatures, and run count as Task 1.
+     - For each run, uniformly sample one anchor value from the 19; insert its Best–Worst Refined Values (BWVR) description as [value] in the Value Anchor prompt.
+     - Use only the 19 BWVR descriptions that map to the 19 PVQ-RR values (exclude “Animal welfare”).
+     - Present the 15 PVQ items (5 values × 3 items) after the instruction.
+   - What to record:
+     - All items from Task 1 plus:
+       - Anchor value acronym and the exact BWVR description inserted.
+       - For anchored-score-curve analysis: per-run vector of centered scores over the 5 presented values and the identity of the anchored value.
+   - Correspondence: Rankings (Figure 2a/2b), Correlations and MDS fit (Figure 3, Table 1), Anchored score curve (Figure 4).
+
+3. PVQ-RR with Demographic prompt (ranking and correlations)
+   - Procedure:
+     - Same 15-item sampling, randomization, gender balance, temperatures, run count as Task 1.
+     - For each run, sample demographics:
+       - age: integer uniform in [18, 75]
+       - gender: one of {male, female, non-binary, other}, sampled uniformly
+       - occupation: sample uniformly from a precompiled list [uncertain]
+       - hobby: sample uniformly from a precompiled list [uncertain]
+     - Insert sampled values into the Demographic prompt.
+   - What to record:
+     - All items from Task 1 plus sampled demographics.
+   - Correspondence: Rankings (Figure 2a/2b), Correlations and MDS fit (Table 1; see also Figure 7 in Appendix for analogous outputs).
+
+4. PVQ-RR with Generated Persona prompt (two-stage; ranking and correlations)
+   - Procedure:
+     - Stage 1 (persona generation): Prompt the model once with “Create a persona (2-3 sentences long):” at temperature 0.7 and record the persona string. No PVQ items here.
+     - Stage 2 (questionnaire): Use the Generated Persona prompt and embed the recorded persona verbatim. Then present the 15 PVQ items as in Task 1; run at the target temperature for this condition (0.0 or 0.7, independent of Stage 1’s 0.7).
+     - Maintain the same sampling, randomization, and gender balance as Task 1 for Stage 2.
+     - Runs per condition: 300 complete Stage-2 administrations; generate one fresh persona per administration.
+   - What to record:
+     - Persona text, Stage 1 raw, Stage 2 raw, extracted ratings, and all metadata from Task 1.
+   - Correspondence: Rankings (Figure 2a/2b), Correlations and MDS fit (Table 1; see also Figures 7–12 in Appendix for analogous outputs).
+
+5. Optional: Sequential (one-by-one) vs. batch administration (within-model ablation)
+   - Procedure:
+     - For one open model, repeat Tasks 1–4 using sequential administration: present items one at a time within a single conversation, collecting a rating before sending the next item (keep the instruction and any persona/anchor fixed throughout the session).
+     - Keep all other settings (sampling, temperatures, run count) identical.
+   - What to record:
+     - Same as corresponding batch runs; additionally record per-item turn index and latency.
+   - Correspondence: Appendix H (Figure 6, Table 5).
+
+
+
+## Evaluation Details
+
+- Pre-processing and normalization
+  - Parse ratings as integers in [1, 6]. If non-integer tokens are returned, parse numerals “1”–“6” via regex; ignore other tokens. If any rating is missing, mark the run invalid and re-query once; if still invalid, drop the run.
+  - Clip out-of-range integers to [1, 6] and flag as corrected. Keep a count of corrections per run; if >2, drop the run.
+  - For each run:
+    - Let x_{i,j} be the raw rating for item j of value i (three items per value i included in that run).
+    - Compute the run’s overall item mean m_run = (1/M) Σ_all_items x, where M = 15.
+    - Compute the per-value score v_i = (1/3) Σ_{j=1..3} x_{i,j} − m_run. This yields centered value scores for the set of values shown in that run.
+
+- Aggregation for value rankings (first-order statistics)
+  - Human benchmark order (descending importance), as in the paper’s benchmark: BEC > BED > SDA > SDT > UNC > UNT > SES > SEP > HE > AC > FAC > UNN > ST > COI > HUM > COR > TR > POR > POD.
+  - Per condition (model × prompt × temperature):
+    - For each value i, compute the grand mean v̄_i by averaging v_i across all valid runs in which i was presented.
+    - Rank all 19 values by v̄_i (descending).
+    - Compute Spearman’s ρ between this 19-value ranking and the human benchmark ranking above.
+    - Also report the centered scores v̄_i sorted by the human order for visualization (as in Figure 2b).
+
+- Correlation matrix construction (second-order statistics from incomplete blocks)
+  - For each pair of values (i, j):
+    - Collect runs in which both i and j were presented together. Let this set have size n_{ij}.
+    - If n_{ij} < N_min (default N_min = 10), mark r_{ij} as missing [NaN].
+    - Else compute Pearson correlation r_{ij} between per-run v_i and v_j across those runs (centered as above). Use unbiased covariance; in numpy: np.corrcoef on stacked vectors with ddof=1 semantics.
+  - After computing r_{ij}:
+    - Set r_{ii} = 1 for all i.
+    - If any off-diagonal entries are missing, impute with the average of available correlations for each involved value (row/column mean imputation). If still missing (entire row/column sparse) mark the condition as [uncertain] for MDS.
+  - Sanity checks:
+    - If any value exhibits near-zero variance across its presented runs (std < 1e-6), set all correlations involving that value to 0 and flag; alternatively, drop that value from MDS for this condition [choose one and apply consistently across conditions].
+
+- From correlations to distances
+  - Convert correlations to Euclidean distances via d_{ij} = sqrt(max(0, 2·(1 − r_{ij}))).
+  - Ensure D is symmetric with zeros on the diagonal.
+
+- 2D embedding (MDS)
+  - Use classical MDS (Torgerson) on D:
+    - Compute B = −0.5 · J D^2 J with J = I − (1/n) 11^T and D^2 elementwise squared.
+    - Eigen-decompose B; take the top two positive eigenvalues λ_1, λ_2 and corresponding eigenvectors U_1, U_2.
+    - X_LLM = U · diag(sqrt(λ)) with shape (19, 2).
+    - If fewer than two positive eigenvalues exist, mark the condition as [uncertain].
+  - Alternatively, sklearn.manifold.MDS(metric=True, dissimilarity='precomputed', n_components=2, random_state=0) is acceptable if classical MDS fails to produce two positive eigenvalues; record which method is used.
+
+- Procrustes alignment to human benchmark and goodness-of-fit
+  - Human benchmark: 2D coordinates for the 19 values derived from human data [uncertain source]. If unavailable, derive benchmark by running the same MDS pipeline on a trusted human PVQ-RR dataset [uncertain], or use a canonical circular embedding ordered by the benchmark ranking with equal angles as a sensitivity analysis.
+  - Align X_LLM to X_human via orthogonal Procrustes (with optional scale):
+    - Center both embeddings to zero mean.
+    - Solve R, scale s by scipy.linalg.orthogonal_procrustes(X_LLM, X_human).
+    - X̂_LLM = s · X_LLM · R.
+  - Metric: Sum of squared differences (SSD) = Σ_i ||X̂_LLM[i] − X_human[i]||^2.
+  - Report SSD per condition (as in Table 1). Lower is better.
+
+- Anchored score curve (for Value Anchor prompt)
+  - Obtain a human-derived circular order of the 19 values by sorting human benchmark coordinates by polar angle θ_i = atan2(y_i, x_i) in [−π, π), breaking ties by minor jitter if needed.
+  - For each anchored run with anchor a:
+    - Compute the per-run vector of centered per-value scores over all 19 values by inserting NaN for values not presented; then replace NaN by that run’s mean of presented values (0 by construction).
+    - Circularly shift indices so that a is at index 0 and maintain the angular order from above.
+  - Average the shifted vectors across all runs to produce one mean curve per condition.
+  - Optionally fit a sine s(k) = A sin(ω k + φ) + c via least squares on indices k = 0..18 and report R^2 [optional; used for qualitative comparison to Figure 4].
+
+
+
+## Implementation Notes
+
+- Prompt and output formatting
+  - Append an explicit output-format instruction to each questionnaire prompt to ensure parseability, without changing the substantive instruction:
+    - “Respond with exactly 15 numbers, one per line, each between 1 and 6, corresponding to items 1–15 in order. Do not include any other text.”
+  - For sequential administration (optional ablation), the per-item instruction should add: “Respond with a single number 1–6 only.” and enforce it at each turn.
+
+- BWVR anchor mapping
+  - Use the following exact descriptions for the 19 anchors (insert verbatim):
+    1) developing your own original ideas and opinions (SDT)
+    2) being free to act independently (SDA)
+    3) having an exciting life; having all sorts of new experiences (ST)
+    4) taking advantage of every opportunity to enjoy life’s pleasures (HE)
+    5) being ambitious and successful (AC)
+    6) having the authority to get others to do what you want (POD)
+    7) having the power that money and possessions can bring (POR)
+    8) protecting your public image and avoiding being shamed (FAC)
+    9) living and acting in ways that ensure that you are personally safe and secure (SEP)
+    10) living in a safe and stable society (SES)
+    11) following cultural family or religious practices (TR)
+    12) obeying all rules and laws (COR)
+    13) making sure you never upset or annoy others (COI)
+    14) being humble and avoiding public recognition (HUM)
+    15) being a completely dependable and trustworthy friend and family member (BED)
+    16) helping and caring for the wellbeing of those who are close (BEC)
+    17) caring and seeking justice for everyone especially the weak and vulnerable in society (UNC)
+    18) protecting the natural environment from destruction or pollution (UNN)
+    19) being open-minded and accepting of people and ideas, even when you disagree with them (UNT)
+  - Exclude “Animal welfare: caring for the welfare of animals”.
+
+- PVQ-RR item mapping and gender forms
+  - Pre-extract a mapping file from the PVQ-RR document: item_id → value_acronym and male/female text variants. Use this to:
+    - Construct each 15-item list with the correct gendered wording for the assigned run.
+    - Ensure each included value contributes exactly three items per run.
+  - Keep item wording unchanged (including pronouns) to avoid measurement drift.
+
+- Randomization, seeds, and balance
+  - Use a reproducible RNG seed per run: seed = hash(model_name, prompt_type, temperature, run_index) mod 2^32.
+  - Enforce uniform sampling of values for:
+    - The 5 values per administration (without replacement within a run).
+    - The anchor value (uniform over 19).
+  - Track pairwise co-occurrence counts online; if by 90% of planned runs any pair has n_{ij} < 5, bias the remaining sampling slightly toward under-covered values to reach N_min = 10.
+
+- Output parsing and validation
+  - Regex: findall r'\b[1-6]\b' on the raw response; if count ≠ 15, attempt a second-pass parse allowing comma-separated tokens r'([1-6])(?:\s*[,;\n]|\s|$)'. If still ≠ 15, re-query once; then drop the run.
+  - Clip out-of-range values only if obviously formatted (e.g., “7” due to slip); otherwise re-query.
+
+- Zero-variance and missing-data handling
+  - If a value’s v_i has std < 1e-6 across its appearances, treat all r_{ij} involving it as 0 and flag the condition (aligns with paper’s note about zero-variance precluding correlations).
+  - For missing r_{ij} due to insufficient co-occurrence, use row/column mean imputation once; if the proportion of missing off-diagonal entries > 10%, mark the MDS result as [uncertain] for that condition.
+
+- Procrustes and SSD computation order
+  - Always compute MDS first on the LLM correlation-derived distances.
+  - Align via Procrustes to the human benchmark, then compute SSD on the aligned coordinates. Do not compute SSD before alignment.
+  - Use identical human coordinates for all conditions to ensure comparability.
+
+- Aggregation and reporting
+  - Per-sample: store raw ratings, parsed ratings, v_i for each presented value, and run mean m_run.
+  - Per-condition:
+    - Rankings: report 19-value v̄_i, full ranking, and Spearman’s ρ to the benchmark.
+    - Correlations/MDS: report the 19×19 r_{ij}, the 2D coordinates X_LLM (pre- and post-Procrustes), and SSD.
+    - Anchored curves: report the mean shifted curve and, if fitted, sine parameters and R^2.
+  - Across temperatures: keep datasets separate; do not pool across temperatures.
+
+- Pitfalls and caveats
+  - Models may sometimes add prose despite “without elaborating”; the explicit output-format line substantially reduces this. Re-issue the prompt once if necessary.
+  - Generated Persona is two-stage; ensure the persona is generated at temperature 0.7, but the questionnaire administration respects the target evaluation temperature (0.0 or 0.7).
+  - Do not leak item-value labels to the model; present only the natural-language items, not acronyms or value names.
+  - Maintain the same conversation context for all 15 (or sequential 15) answers in a run; do not reinitialize between items within a session.
+  - For sequential administration, ensure cumulative context includes prior Q/A pairs to mimic a single session.

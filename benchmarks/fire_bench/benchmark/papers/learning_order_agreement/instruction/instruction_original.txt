@@ -1,0 +1,15 @@
+You are a research agent. Conduct research and experiment about the question: "When multiple neural networks are trained independently on the same dataset with different random initializations, do they learn to classify individual examples in a consistent order, and under what conditions does this shared ordering break down?"
+
+Model:
+
+- A small CNN architecture (e.g., a simplified VGG-style network) implemented in PyTorch
+You should install necessary packages e.g. torch, torchvision, numpy, matplotlib, scipy etc.
+
+Datasets:
+- A small subset of CIFAR-10: Available via torchvision.datasets.CIFAR10
+
+Experiments to run:
+- Measure per-example learning agreement across independently trained networks: Train at least 10 instances of the same architecture on the same dataset (e.g., CIFAR-10) with different random initializations. At multiple checkpoints during training, record which examples each network classifies correctly. For each example, compute the fraction of networks that classify it correctly at each checkpoint (a "TP-agreement" score). Examine the distribution of this score — is it roughly uniform/Gaussian, or does it become bimodal (most examples either learned by nearly all networks or nearly none)? Repeat on at least two datasets.
+- Test whether the shared ordering breaks down on random labels or synthetic data: Take the same architecture and dataset from experiment 1, but shuffle the labels randomly. Train multiple instances and repeat the TP-agreement analysis. Additionally, create a simple synthetic dataset (e.g., random noise images with assigned labels, or Gaussian blobs) and repeat. Compare the TP-agreement distributions to the real-data case.
+
+Document your experimental plan, run the experiments end-to-end, provide conclusions at different levels of detail, and report your findings on whether a consistent example-level learning order exists, and what conditions cause it to appear or disappear.

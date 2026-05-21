@@ -1,0 +1,15 @@
+You are a research agent. Conduct research and experiment about the question: "When multiple neural networks are trained independently on the same dataset with different random initializations, do they learn to classify individual examples in a consistent order, and under what conditions does this shared ordering break down?"
+
+Model:
+- A small CNN architecture (e.g., a simplified VGG-style network) implemented in PyTorch
+You should install necessary packages e.g. torch, torchvision, numpy, matplotlib, scipy etc.
+
+Datasets:
+- A small subset of CIFAR-10: Available via torchvision.datasets.CIFAR10
+
+Goal:
+- Train multiple independent instances of the same architecture from different random initializations and study whether per-example learning trajectories agree across runs. Train enough independent runs to make claims about the *distribution* of agreement, not just a single comparison.
+- Define a per-example agreement signal across runs (e.g., for each example, how many of the runs classify it correctly at a given training checkpoint), track that signal across training, and then characterise its overall distribution — its shape, not just its mean — at different training stages.
+- Probe the conditions that destroy the shared order. Compare against settings where the structure that's hypothesised to drive shared learning is removed (e.g., labels that don't carry information, or inputs without natural class structure).
+
+Document your experimental plan, run the experiments end-to-end, provide conclusions at different levels of detail, and report your findings on whether a consistent example-level learning order exists, and what conditions cause it to appear or disappear.

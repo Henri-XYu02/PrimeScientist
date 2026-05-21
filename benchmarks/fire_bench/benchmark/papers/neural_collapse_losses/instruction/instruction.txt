@@ -1,0 +1,18 @@
+You are a research agent. Conduct research and experiment about the question: "Do different commonly-used classification loss functions (Cross-Entropy, Label Smoothing, Focal Loss, Mean Squared Error) lead to different learned feature representations and generalization performance, or do they converge to equivalent solutions when models are sufficiently wide and trained long enough?"
+
+You have access to the following resources:
+
+Model:
+- WideResNet (e.g., WideResNet-50 with varying width multipliers). Implement or source from PyTorch/torchvision.
+
+You should install necessary packages e.g. torch, torchvision, numpy, matplotlib etc.
+
+Datasets:
+- A small subset of CIFAR-10: Available via torchvision.datasets.
+
+Goal:
+- Train WideResNet models on CIFAR-10 with each of the four losses (CE, Label Smoothing, Focal Loss, MSE) and compare both their final feature geometry and their generalization performance.
+- For the geometry analysis, the standard Neural Collapse framework is appropriate — it characterises a trained classifier in terms of within-class feature variability, the geometry of the class means, and how the classifier weights align with those class means. Use this framework (or a justified subset of it) to make the comparison across losses concrete and quantitative.
+- Sweep the model capacity (width multiplier) and training duration so you can answer the second half of the question — whether differences across losses shrink in the high-capacity / long-training regime.
+
+Document your experimental plan, run the experiments end-to-end, and report your findings on whether the choice of loss function matters for final feature geometry and generalization.

@@ -1,0 +1,288 @@
+You are a research agent. Conduct research and experiment about the question: "Are modern large language models (LLMs) robust in handling multiple choice questions (MCQs), and if not, what causes their vulnerability, especially regarding their sensitivity to option position changes, and how can such issues be mitigated?"
+
+You have access to the following resources:
+
+Models:
+- gpt-3.5-turbo and gpt-4 via the provided inference utilities
+- Load with HuggingFace: meta-llama/Llama-2-13b-chat-hf
+- You can call these models using: from utils.llm_inference import LLMInference
+- API key is provided with the LLMInference initialization function
+- You can use the batch_generate() function to speed up the experiment
+- Computational budget: 1000 API calls per model
+
+Datasets:
+- MMLU (multiple choice questions):
+You can use the following code to load the dataset:
+```python
+from datasets import load_dataset
+ds = load_dataset("cais/mmlu", "abstract_algebra")
+```
+
+Please design and execute experiments to investigate this research question. Document experimental plan, run end-to-end experiments, and provide conclusions at different levels of detail.
+
+---
+
+## Experimental Design
+
+1. 0-shot baseline MCQ selection
+   - Procedure:
+     - Use the standard MCQ prompt template shown in Appendix A, Figures 6–7 of the paper:
+       - For decoder-only open-source models: plain text template with “Answer: ” followed immediately by the single-letter option ID (no BOS token).
+       - For chat models via API: system message with task description + user message containing Question/Options and trailing “Answer:”.
+     - Temperature = 0.
+     - For each test item, record the next-token distribution over option ID symbols (4-way for 4-option tasks, 5-way for 5-option tasks) at the “Answer: ” position (open-source) or the first generated token (API).
+     - Use default, unmodified option order.
+   - What to record:
+     - Raw model outputs: logits/logprobs for candidate ID tokens (open-source) or the first generated token string (API).
+     - Extracted answer ID.
+     - Per-item confidence: max Pobserved(di|q, x).
+   - Correspondence: Figures 3, 17; Tables 3–4 (Default columns).
+
+2. Answer-moving attack (option-position robustness)
+   - Procedure:
+     - For each test item, create four (or five) adversarial variants by moving the correct option content to each target position X ∈ {A,B,C,D(,E)}:
+       - Implementation: place the correct option at position X and keep the relative order of the remaining options stable (i.e., stable insertion).
+     - Exclude items whose option texts contain cross-option references (e.g., “A and B,” “none of the above,” “all of the above”). Detect via regex: (?i)\b(all|none)\s+of\s+the\s+above\b|(?i)\b(both|either)\s+A\s+and\s+B\b|(?i)\bA\s+and\s+B\b|(?i)\bB\s+and\s+C\b.
+     - Evaluate with the same 0-shot prompt and decoding settings as Task 1.
+   - What to record:
+     - Accuracy per target position X.
+     - Paired accuracy deltas vs. original.
+     - Option-ID recall balance on the original set (see Evaluation Details) to correlate with performance fluctuations.
+   - Correspondence: Table 1; Figure 2 (concept).
+
+3. Measuring selection bias (recall balance)
+   - Procedure:
+     - Using predictions from Task 1 (default inputs), compute per-ID recalls and their standard deviation (RStd). Also compute “normalized recalls” for visualization (recall − overall accuracy).
+     - For significance checks of nonuniform choice counts across IDs, run χ² goodness-of-fit on predicted ID frequencies conditioned on balanced label subsets (see preprocessing note below).
+   - What to record:
+     - Per-ID recalls, RStd.
+     - Overall accuracy.
+     - χ² statistic and p-value on balanced subsets where possible.
+   - Correspondence: Figure 3; Figures 11–13; Appendix C Figure 17.
+
+4. Causes of selection bias: shuffling IDs vs. removing IDs
+   - 4a) Shuffling option IDs (token-bias isolation)
+     - Procedure:
+       - Keep option contents in the default order but randomly permute the mapping from ordering positions to printed ID symbols (e.g., default A/B/C/D → B/D/A/C) independently per item.
+       - Evaluate 0-shot as in Task 1.
+     - What to record:
+       - Per-ID recalls/RStd.
+       - Accuracy.
+     - Correspondence: Table 2 (Shuffling IDs row); Figure 18.
+   - 4b) Removing option IDs (position-bias isolation)
+     - Procedure:
+       - Use the “no-ID” prompts (Appendix A, Figures 8–9). The model must select by content, not by ID.
+       - Open-source: compute length-normalized option likelihoods (see Evaluation Details) and pick argmax.
+       - API: require the assistant to output the full selected option string; match to the gold option by normalized exact match.
+     - What to record:
+       - Accuracy and RStd (RStd computed over ordering positions rather than ID symbols).
+     - Correspondence: Table 2 (Removing IDs); Figures 11–13 (0-shot, Removing IDs).
+
+5. Alternative ID symbol sets
+   - Procedure:
+     - Replace A/B/C/D with each of:
+       - a/b/c/d
+       - 1/2/3/4
+       - (A)/(B)/(C)/(D)
+     - Keep all else identical to Task 1.
+   - What to record:
+     - Accuracy and RStd per variant.
+   - Correspondence: Table 2 (rows a/b/c/d; 1/2/3/4; (A)/(B)/(C)/(D)).
+
+6. Prompting-based debiasing attempts
+   - 6a) Explicit debiasing instruction
+     - Procedure:
+       - Insert this system message: “Please note that the provided options have been randomly shuffled, so it is essential to consider them fairly and without bias.”
+       - Otherwise identical to Task 1.
+   - 6b) Chain-of-Thought (two-call)
+     - Procedure:
+       - First call: append “Let’s think step by step:” after “Answer:” and collect the reasoning (temperature 0).
+       - Second call: repeat the full conversation and then ask: “Given all of the above, the answer of the question is:” and require a single ID token as final message (temperature 0). Use the template in Appendix A, Figure 10.
+   - What to record:
+     - Accuracy and RStd for both strategies.
+   - Correspondence: Table 2 (Debiasing Instruct, Chain-of-Thought rows).
+
+7. Few-shot (5-shot) setting
+   - Procedure:
+     - Use five in-context examples from the development split of each task/subject, shared across all test items for that task/subject.
+     - Keep option labels and formats consistent with Task 1; run default and the ablations (Removing IDs, Cyclic Perm, PriDe) in the same way as 0-shot.
+   - What to record:
+     - Accuracy and RStd under 5-shot for the same conditions as 0-shot.
+   - Correspondence: Figures 3, 19–20; Table 4.
+
+8. Debiasing baselines: permutation averaging
+   - 8a) Cyclic permutation (cost ×n)
+     - Procedure:
+       - For each item, build n cyclic rotations of option contents; for each rotation I, query Pobserved over ID symbols and map back to the original option content via gI (Equation 1).
+       - Average Pobserved(dgI(i)|q, xI) across the n permutations to get debiased probabilities over original contents; take argmax.
+   - 8b) Full permutation (cost ×n!)
+     - Procedure:
+       - Same as 8a, but enumerate all permutations I; skip for 5-option tasks due to cost.
+   - API models without logprobs:
+     - Approximate Pobserved via sampling K times per permutation (K = 100) and using relative frequencies of the first generated token as the distribution; temperature [uncertain], top_p = 1.0.
+   - What to record:
+     - Debiased accuracy and RStd vs. computational cost.
+   - Correspondence: Figure 4 (Full Perm, Cyclic Perm curves); Figures 19, 21–22.
+
+9. PriDe debiasing (prior estimation + efficient debiasing)
+   - Procedure:
+     - Choose α ∈ {2%, 5%, 10%, 20%, 40%, 60%, 80%} of the test items as De (random, stratified by subject if applicable); repeat 5 runs with different De to report mean and std.
+     - For each (q, x) ∈ De:
+       - Run Cyclic permutations to obtain {Pobserved(di|q, xI)} over I.
+       - Estimate sample-specific prior via Equation 7 (softmax of average log-probabilities across permutations).
+       - Debias the sample with Equation 1 (Cyclic averaging) to get its prediction.
+     - Compute the global prior ePprior by averaging priors over De.
+     - For each remaining (q, x) ∈ Dr:
+       - Compute Pobserved(di|q, x) on the default input.
+       - Compute ePdebiased(oi|q, x) ∝ Pobserved(di|q, x)/ePprior(di); normalize to sum to 1; pick argmax.
+   - Optional low-cost variants:
+     - Replace Cyclic with 2- or 3-permutation subsets eI for De and/or for α−|De| debiasing, as in Figures 21–22.
+   - What to record:
+     - ePprior vectors, RStd/accuracy vs. α (and vs. permutation budget in hybrid settings).
+     - Stability of ePprior across α (2–20%).
+     - Per-item original vs. debiased probabilities and rank shifts (see Task 10).
+   - Correspondence: Figures 4–5, 17, 19–22; Tables 3–4.
+
+10. How debiasing changes predictions
+    - Procedure:
+      - On the same evaluation split, collect per-item:
+        - Original predicted label and confidence (max Pobserved).
+        - Debiased predicted label and debiased confidence (max ePdebiased).
+        - Whether change is T→F or F→T.
+        - Rank of the debiased choice in the original distribution and vice versa.
+      - Do this for PriDe (α = 5%) and for Cyclic Perm (Debiasing cost ×n).
+    - What to record:
+      - Proportions of Changed/T→F/F→T, average confidences on changed vs. all, rank histograms.
+    - Correspondence: Tables 5–6.
+
+11. Option-count sensitivity (2- and 3-option settings)
+    - Procedure:
+      - For each original item, randomly sample k ∈ {2,3} options including the golden option; discard/resample until the gold is included. Fix a random seed and generate one sampled subset per item per k.
+      - Evaluate default and “Removing IDs” as in Tasks 1 and 4b.
+    - What to record:
+      - RStd and accuracy for k=2,3; repeat with 3 random seeds and report means.
+    - Correspondence: Figures 14–15.
+
+12. Randomizing option content order (sanity check for recall balance premise)
+    - Procedure:
+      - For each item, randomly permute option contents (uniformly) once; maintain the printed IDs aligned to positions (as usual).
+      - Evaluate as in Task 1; compare RStd to the original.
+    - What to record:
+      - RStd deltas per model/subject.
+    - Correspondence: Figure 18.
+
+13. Cross-domain transfer of priors
+    - Procedure:
+      - Domains: the four category groups (STEM, Social Science, Humanities, Others) in the 4-option academic benchmark, plus the 4-option science challenge as a separate domain.
+      - For each ordered (source, target) pair:
+        - Estimate ePprior on α=5% of source-domain test items via PriDe (De sampling within source).
+        - Apply that ePprior to the entire target domain as in Equation 8.
+    - What to record:
+      - RStd/accuracy on source and on target (transfer), per pair.
+    - Correspondence: Figure 5 (0-shot), Figure 20 (5-shot).
+
+
+
+## Evaluation Details
+
+- Preprocessing and splits
+  - Exclude cross-referential items for any experiment that permutes or moves options (regex above).
+  - For 5-shot, select five development examples per subject/task; fix a global seed and choose the first five after shuffling; share the same five across all test items in that subject/task; no label leakage from test.
+
+- Parsing and normalization of model outputs
+  - Open-source (ID selection):
+    - Do not prepend a BOS token.
+    - Compute the next-token logit distribution at the first position after “Answer: ”.
+    - Candidate token IDs:
+      - For uppercase letters, use tokenizer.encode(" A")[−1], …, tokenizer.encode(" E")[−1] (leading space required).
+      - For lowercase, digits, or parenthesized variants, build candidates analogously: " a", " 1", " (A)", etc., ensuring single-token coverage; if a symbol splits into multiple tokens, sum logprobs across its tokens (rare; log-sum of sequential conditional probabilities).
+    - Convert logits to probabilities with softmax restricted to candidate IDs only (i.e., masked softmax).
+  - API (ID selection):
+    - Default: temperature = 0, parse the first non-whitespace character from the assistant’s first chunk; map to {A,B,C,D,E}. Uppercase and strip punctuation. If the first character is not a valid ID, scan the next characters until a valid ID or return “invalid.”
+    - Probability approximation for permutation-based baselines/PriDe (no logprobs): sample K = 100 generations per permutation with temperature [uncertain], top_p = 1.0; compute Pobserved as the empirical frequency of first valid ID among {A,B,C,D,E}; ignore invalids or redistribute uniformly among valid IDs [uncertain].
+  - Removing IDs:
+    - Open-source: length-normalized log-likelihood
+      - For each option string o, score(o) = (1/|Tok(o)|) ∑_{t=1}^{|Tok(o)|} log p(tok_t | prefix + tok_{<t}), where prefix is the prompt ending at “Answer: ”.
+      - Choose argmax score(o).
+    - API: require the full option string; normalize by:
+      - Lowercasing, trim whitespace, collapse multiple spaces, strip trailing punctuation (.,;:); compare exact string to one of the listed options. If no exact match, compute normalized Levenshtein distance to each option and accept the nearest if distance/len ≤ 0.05 [uncertain], else count as wrong.
+
+- Metrics
+  - Accuracy: (#correct) / N.
+  - Option-ID recalls:
+    - For each ID i in the default inputs, let Gi be the set of items whose gold label is i (after any filtering applied to the given condition); recall_i = (# items in Gi correctly predicted) / |Gi|.
+    - RStd = sqrt( (1/n) ∑_{i=1}^n (recall_i − μ)^2 ), where μ = (1/n) ∑ recall_i, n = number of IDs used in the condition (4 or 5; for k-option variants, use k).
+  - Normalized recalls (for visualization like Figure 3): recall_i − overall accuracy.
+  - χ² goodness-of-fit (optional): on a balanced subset where golds are forced to be uniform across IDs (construct by subsampling min_i |Gi| items from each Gi), test whether predicted ID counts deviate from uniform.
+
+- Debiasing computations
+  - Cyclic Permutation debiasing (Equation 1):
+    - For each I in the n cyclic rotations, compute Pobserved(dgI(i)|q, xI).
+    - Debiased distribution over original contents: average across I; choose argmax.
+  - Full Permutation: same but over all permutations; skip for 5-option tasks.
+  - PriDe:
+    - Prior estimation per sample (Equation 7): Pprior(di|q) = softmax( (1/|I|) ∑_{I} log Pobserved(di|q, xI) ).
+    - Global prior: ePprior(di) = (1/|De|) ∑_{(q,x)∈De} Pprior(di|q).
+    - Efficient debiasing (Equation 8): ePdebiased(oi|q, x) ∝ Pobserved(di|q, x)/ePprior(di); normalize to sum to 1.
+    - Numerical stability: clip ePprior(di) to [ε, 1], ε = 1e-6; renormalize before division; in logs, compute log Pobserved − log ePprior then softmax.
+
+- Aggregation
+  - Per-sample: store raw outputs, parsed prediction, confidence, and all intermediate probabilities (Pobserved, debiased distributions, priors).
+  - Per-condition (model × setting): compute accuracy, per-ID recalls, RStd; for debiasing, report vs. computational cost:
+    - Cost multipliers: ×1 (Default/Removing IDs), ×n (Cyclic), ×n! (Full), ×(1 + α·(n−1)) approximately for PriDe with De debiased via Cyclic (exact: ×(1 + α·(n−1)) if you only run one pass for Dr).
+  - Overall: micro-average across subjects; additionally report per-domain (four category groups) when applicable; for PriDe, average results over 5 different De samplings and report mean ± std.
+
+- Edge cases
+  - If an API response lacks a valid ID after scanning 5 characters, mark as invalid and count as incorrect; exclude invalids from frequency estimates when approximating Pobserved (renormalize over valid IDs) [uncertain].
+  - For alternative ID symbol sets, ensure candidates cover exactly one of each symbol; if a symbol tokenizes into multiple tokens, use sequential log-likelihood as above.
+
+## Implementation Notes
+
+- Prompt templates and tokenization
+  - Use exactly the templates from Appendix A:
+    - Open-source (with IDs): plain text; answer extracted from the single next token after “Answer: ”; do not add BOS; ensure a single preceding space before the ID so the tokenizer produces a single “▁A/▁B/...” token.
+    - API (with IDs): system and user messages exactly as shown; the assistant should respond with a single letter.
+    - Open-source/API (no IDs): list options as raw texts under “Options:” and require the model to output the full option content after “Answer:”.
+    - Chain-of-Thought: two-call sequence as in Figure 10; temperature = 0 both calls; parse the final single-letter answer from the last assistant message.
+  - For alternative IDs:
+    - Replace the printed symbols throughout (“Options:” list and the expected candidate tokens after “Answer: ”).
+    - Recompute the candidate token IDs for the new symbols; verify they are single tokens; if not, fall back to sequential token scoring.
+
+- Ordering rules to respect
+  - Always run the 0-shot default baseline before any ablation/debiasing to capture original recalls and RStd.
+  - For few-shot, keep the five in-context examples fixed within each subject/task across all test items and all ablations, to avoid confounding.
+  - In answer-moving attack and all permutation-based methods, never change the question text; only manipulate option contents/labels as required.
+
+- Prior estimation efficiency (PriDe)
+  - Choose α to meet compute budget; α = 5% is a strong low-cost default.
+  - For each item in De, you already run Cyclic permutations; reuse these computations for both prior estimation and direct (exact) debiasing of De.
+  - For Dr, only one forward pass per item is needed to obtain Pobserved on the default input, then apply Equation 8 with the global prior.
+
+- Numerical and parsing caveats
+  - Open-source: when using masked softmax over candidate IDs, extract logits from the model’s output head exactly at the step after emitting the space following “Answer: ”; confirm by checking that the probability mass over candidate IDs sums to < 1 (since full vocab softmax) but relative probabilities are computed over the candidate subset only.
+  - Length normalization for option-content likelihoods: divide by the number of output tokens (not characters); ensure the same tokenization scheme and prefix for all options.
+  - When computing χ² over predicted IDs, ensure the gold labels are balanced; if not enough samples to balance (e.g., small subject), skip χ² or mark as [uncertain].
+
+- Randomization and reproducibility
+  - Fix global RNG seeds for:
+    - Selecting De for PriDe (repeat with 5 distinct seeds).
+    - Sampling 2-/3-option subsets (3 seeds).
+    - Shuffling ID symbols and shuffling option contents (single seed per run).
+  - Log the exact permutations used per item (I and gI mappings) to enable re-computation.
+
+- Filtering and validity
+  - Before any option-moving or permutation, apply the cross-reference filter to ensure logical validity of changes.
+  - For API probability approximation (K=100 samples), throttle requests to respect rate limits; parallelize across permutations and items where possible; cache counts per (item, permutation).
+
+- Cost control
+  - Prefer PriDe with α ≤ 10% over Cyclic on 100% items for better RStd reduction per unit cost.
+  - Skip Full permutation for 5-option tasks due to ×120 cost; for 4-option tasks, reserve Full only for small-sample analyses.
+
+- Output schema
+  - Store per-item JSON with:
+    - question_id, subject/domain, condition tag
+    - original options (ordered), any transformed order/mapping
+    - raw logits/probs for candidate IDs (open-source) or raw generations (API), parsed first token
+    - Pobserved, ePprior (if available), ePdebiased
+    - predicted label/content, gold label/content, correctness
+    - confidence, ranks, and change tags for debiasing analyses.

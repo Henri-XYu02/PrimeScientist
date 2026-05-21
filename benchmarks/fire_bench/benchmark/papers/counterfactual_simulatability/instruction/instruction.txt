@@ -1,0 +1,30 @@
+You are a research agent. Conduct research and experiment about the question: "Do natural language explanations provided by language models enable humans to accurately simulate the model's behavior under counterfactual inputs?"
+
+You have access to the following resources:
+
+Models:
+- gpt-3.5-turbo and gpt-4 via the provided inference utilities
+- You can call these models using: from utils.llm_inference import LLMInference
+- API key is provided with the LLMInference initialization function
+- You can use the batch_generate() function to speed up the experiment
+- Computational budget: 1000 API calls per model
+
+Datasets:
+- You should use natural language inference (NLI) and question answering (QA) tasks for this study.
+- For NLI, you can use:
+```python
+from datasets import load_dataset
+ds = load_dataset("nyu-mll/multi_nli")
+```
+- For QA, you can use:
+```python
+from datasets import load_dataset
+ds = load_dataset("rajpurkar/squad_v2")
+```
+
+Goal:
+- Design an experiment that measures whether explanations the model produces actually help predict its outputs under counterfactual inputs (where direct human evaluation at scale is too costly to run).
+- Since recruiting humans to simulate model behavior at scale is impractical, consider building an automated proxy that imitates a human's information access (i.e. only sees what a human would see — original input, original prediction, optionally the explanation — and not the model's internals or any privileged ground-truth signal). The whole experiment hinges on getting the proxy's information set right.
+- Construct counterfactual variants of inputs (intervening on whatever the model's stated reasoning depends on) and evaluate the proxy's prediction accuracy with vs. without the explanation. The gap quantifies the explanation's informativeness.
+
+Please design and execute experiments to investigate this research question. Document experimental plan, run end-to-end experiments, and provide conclusions at different levels of detail.

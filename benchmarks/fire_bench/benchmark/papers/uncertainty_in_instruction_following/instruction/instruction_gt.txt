@@ -1,0 +1,222 @@
+You are a research agent. Conduct research and experiment about the question: "How effectively can large language models (LLMs) estimate their uncertainty when following user instructions, and how can this ability be systematically evaluated in a controlled setting?"
+
+You have access to the following resources:
+
+Models:
+- OpenAI's gpt-3.5-turbo
+- Load with HuggingFace: meta-llama/Llama-2-7b-chat
+- Load with HuggingFace: meta-llama/Llama-2-13b-chat
+- Load with HuggingFace: mistralai/Mistral-7B-Instruct-v0.3
+
+- You can call these models using: from utils.llm_inference import LLMInference
+- API key is provided with the LLMInference initialization function
+- You can use the batch_generate() function to speed up the experiment
+- Computational budget: 10000 API calls per model
+
+Datasets:
+- Two distinct versions of the dataset: Controlled and Realistic: /data/controlled_ver.jsonl and /data/realistic_ver.jsonl
+- Introduce two levels of controlled difficulty–Controlled-Easy and Controlled-Hard by generating three categories of responses: completely incorrect, correct, and subtly off-target
+- In the Controlled-Easy, calculate AUROC based on distinguishing between correct and completely incorrect responses
+- In the Controlled-Hard, calculate AUROC based on distinguishing between correct and subtly off target responses.
+
+Evaluation Methods:
+- Verbalized confidence: The model’s self-reported confidence, scored from 0 to 9, indicating its perceived likelihood that the response correctly follows instructions.
+- Normalized p(true) and p(true): These methods assess the probability of the ‘true’ token, calculated from a binary choice prompt.
+- Perplexity and Sequence probability: Perplexity measures the likelihood of generating a given sequence.
+- Mean token entropy for LLMs: Entropy measures uncertainty based on token prediction variability.
+
+Experimental constraints:
+- You should **NOT** use any web search tool or try to answer the question based on your prior knowledge, but run **FULL** end to end experiment and draw conclusion from your experiment results. 
+- When loading dataset using ```load_dataset("google/IFEval")```, don't try to add other arguments like "cache_dir".
+
+
+Please design and execute experiments to investigate this research question. Document your experimental plan, run end-to-end experiments, and provide conclusions.
+
+---
+
+## Experimental Design
+
+1) IFEval baseline (chance-level check)
+- Procedure:
+  - Decode deterministically (greedy; temperature 0, top_p 1, no sampling). Generate one response per prompt.
+  - Use the dataset’s automated verifier to label each generated response as correct (1) or incorrect (0).
+  - For each generated response, compute all uncertainty scores:
+    - Verbalized confidence via a separate meta-prompt (see “Implementation Notes: Prompt templates”) using the model itself, conditioned on the instruction and the generated response.
+    - p(true) and normalized p(true) via a one-step binary-choice probe (see “Implementation Notes: Prompt templates”), using the model’s next-token probabilities for tokens ‘A’ and ‘B’.
+    - Perplexity, sequence probability, and mean token entropy computed under the same model, conditioning on the original prompt and teacher-forcing the generated response.
+  - Preserve the IFEval instruction type/category metadata per instance.
+  - No shuffling required; process all prompts (n=541).
+- What to record:
+  - Raw generated responses.
+  - Ground-truth instruction-following labels from the verifier.
+  - For verbalized confidence: raw score string and parsed integer [0–9].
+  - For p(true): p(A), p(B), normalized p(A)/(p(A)+p(B)).
+  - For perplexity/sequence probability: sequence length t, sum of log-probabilities, per-token log-probabilities.
+  - For entropy: per-token entropy values and their mean.
+  - Tokenized response length (in model tokens).
+  - Per-instruction-type AUROC and macro-average across instruction types.
+- Correspondence: Section 2 (Methods), Table 1; Appendix Table 5 (per-instruction-type).
+
+2) Controlled-Easy (length-neutral, easy contrast)
+- Procedure:
+  - Use the provided responses and labels. Only compare “correct” vs “completely incorrect” subsets; exclude “subtle” cases.
+  - For each sample, compute uncertainty scores (verbalized, p(true)/normalized, perplexity, sequence probability, entropy) as above, but do not generate a new response (use the provided response).
+  - Length neutrality is pre-established; still record tokenized lengths for verification.
+  - Evaluate per instruction type and macro-average.
+- What to record:
+  - Provided responses and their labels (correct=1, wrong=0).
+  - All uncertainty scores with the same breakdown as in (1).
+  - Length distributions (for QA/diagnostics).
+- Correspondence: Section 3.1.1 and Table 4 (Controlled-Easy), Appendix Tables 7–8, Figure 3a.
+
+3) Controlled-Hard (length-neutral, subtle contrast)
+- Procedure:
+  - Use the provided responses and labels. Only compare “correct” vs “subtly off-target” subsets; exclude “completely incorrect” cases.
+  - Compute all uncertainty scores as in (2).
+  - Evaluate per instruction type and macro-average.
+- What to record:
+  - Provided responses and labels (correct=1, subtle=0).
+  - All uncertainty scores; token lengths for verification.
+- Correspondence: Section 3.1.1 and Table 4 (Controlled-Hard), Appendix Tables 7–8, Figure 6a.
+
+4) Realistic (natural length signal retained)
+- Procedure:
+  - Use the provided responses and labels. Include all available cases; no length control.
+  - Compute the same uncertainty scores.
+  - Evaluate per instruction type and macro-average.
+- What to record:
+  - Provided responses and labels.
+  - All uncertainty scores; token lengths for length effect analysis.
+- Correspondence: Section 3.1.2 and Table 4 (Realistic), Appendix Tables 7–9, Figures 3b, 4, 6b.
+
+5) Optional instruction-type breakdowns
+- Procedure:
+  - For all settings above, produce per-instruction-type AUROC (startend, detectable-content, detectable-format, language, change-case, keywords, length-constraints, punctuation).
+  - Report macro-averages across instruction types (unweighted).
+- What to record:
+  - AUROC per type and averaged.
+- Correspondence: Appendix Table 9; per-type analyses in Sections 2.2 and 3.2.4.
+
+
+## Evaluation Details
+
+- Score directionality (for AUROC):
+  - All scores must be oriented so “higher means more likely correct” before AUROC.
+  - Verbalized confidence: use the parsed integer as-is (0–9).
+  - p(true): use p(A). Normalized p(true): p(A)/(p(A)+p(B)).
+  - Perplexity: invert sign (use −perplexity or 1/perplexity). AUROC is rank-invariant; use −avg_nll or −perplexity consistently.
+  - Sequence probability: use the sequence probability itself (higher is better). If using negative log-probability, multiply by −1 before AUROC.
+  - Entropy: use negative mean token entropy (−H) so higher implies more likely correct.
+
+- Exact computations:
+  - p(true) and normalized p(true):
+    - Build the binary-choice prompt exactly as in “Implementation Notes: Prompt templates.”
+    - Obtain next-token probabilities for ‘A’ and ‘B’ at the first decoding step after the prompt. Set:
+      - p(true) = p(‘A’)
+      - normalized p(true) = p(‘A’) / (p(‘A’) + p(‘B’))
+    - If both single-character tokens and their space-prefixed variants exist in the tokenizer, select the variant that matches the prompt ending (no leading space after “(”; see template).
+  - Perplexity (PPL):
+    - Given response tokens x1..xt and prompt context c, compute:
+      - avg_nll = −(1/t) * Σi log pθ(xi | c, x< i)
+      - perplexity = exp(avg_nll)
+    - Compute with teacher forcing using the model’s own tokenizer and logits.
+    - Numerical safety: clamp probabilities with epsilon=1e−12 before log.
+  - Sequence probability:
+    - Using per-token conditionals as above, compute:
+      - sum_logp = Σi log pθ(xi | c, x< i)
+      - seq_prob = exp(sum_logp)
+    - AUROC is invariant to monotone transforms; if memory-constrained, use sum_logp directly (larger is better).
+  - Mean token entropy:
+    - For each step i, compute the categorical entropy over the next-token distribution:
+      - Hi = − Σv pθ(v | c, x< i) log pθ(v | c, x< i)
+    - Mean entropy H = (1/t) * Σi Hi. Use −H as the score input to AUROC.
+    - Use model logits → softmax to obtain pθ(·).
+  - AUROC:
+    - Use sklearn.metrics.roc_auc_score(y_true, y_score).
+    - Compute per-instruction-type AUROC first, then take the unweighted mean (macro-average) across instruction types.
+    - For settings with specified class subsets:
+      - Controlled-Easy: only correct vs completely incorrect.
+      - Controlled-Hard: only correct vs subtle.
+      - Realistic: use all provided labels.
+
+- Output normalization/pre-processing:
+  - Verbalized confidence: strip whitespace; extract the first integer in [0–9] via regex. If none found, mark as invalid and exclude from AUROC for that method (report count of excluded).
+  - Binary-choice continuation: do not sample; only read the next-token probabilities at the first step; do not allow the model to generate beyond the first token.
+  - Token length: count response tokens using the same tokenizer as used for the model scoring pass.
+
+- Aggregation:
+  - For each method:
+    - Per-sample scores → per-instruction-type AUROC → macro-average across instruction types.
+  - Also report overall AUROC across all samples (pooled), but the primary number should be the macro-average to align with the paper.
+  - Provide mean and standard deviation of token lengths per class for diagnostics (used in Figure 2/Appendix 11 analogs).
+
+
+## Implementation Notes
+
+- Decoding and determinism:
+  - Use greedy decoding everywhere (temperature=0, top_p=1, no sampling). Set a fixed random seed for any library defaults.
+  - For IFEval response generation: set max_new_tokens to [uncertain] (suggest 512) to reduce truncation risk.
+
+- Prompt templates, delimiters, and parsing:
+  - Verbalized confidence (exact template; model must return ONLY an integer 0–9):
+    You are a helpful assistant in evaluating the quality of the outputs for a given instruction.
+    Your goal is to score a given output for the given instruction.
+    Score the output for the given instruction.
+    The output is generated by an AI chatbot.
+    You should give an overall score (an integer) on a scale of 0 to 9, where a higher score
+    indicates better overall performance.
+    Do NOT provide any explanation for your evaluation. Your response should be ONLY the
+    score, an integer between 0 and 9.
+    # Instruction: {input}
+    # Output: {instruction following response}
+    # Score of the Output (Your response should be ONLY the score, an integer between 0 and 9):
+  - p(true) / normalized p(true) (exact template; compute next-token probabilities for ‘A’ vs ‘B’):
+    You are a helpful assistant in evaluating the quality of the outputs for a given instruction.
+    Your goal is to score a given output for the given instruction.
+    Question: {instruction input}
+    Response: {instruction following response}
+    Does the response: (A) Follow instructions (B) Not follow instructions.
+    The answer is: (
+    - Do not let the model generate; only read the logits for the immediate next token. Map token ‘A’ to “true” and ‘B’ to “false” as defined in the paper’s adaptation.
+  - Maintain the exact “# Instruction:” and “# Output:” delimiters for verbalized confidence to ease parsing.
+
+- Order of operations:
+  - For each sample:
+    1) Ensure the instruction, prompt context, and model response are available (generate only for IFEval).
+    2) Compute logit-based scores (perplexity, sequence probability, entropy) by teacher-forcing the response with the original prompt context.
+    3) Compute binary-choice probabilities via the one-step p(true) prompt (no multi-token decoding).
+    4) Query verbalized confidence via the scoring prompt (enforce integer-only output).
+  - For Controlled settings:
+    - Filter to the appropriate subsets (Easy: correct vs completely wrong; Hard: correct vs subtle) before AUROC.
+  - For IFEval:
+    - Generate first, then compute uncertainty scores and ground-truth labels using the official verifier.
+
+- Pitfalls and caveats:
+  - Length signal:
+    - Controlled settings are meant to be length-neutral; still confirm by logging token-length distributions per class. If incidental drift appears, do not rebalance (use provided data) but report the stats.
+  - Task quality entanglement:
+    - The provided datasets have been quality-filtered (>8). Do not alter or re-filter; assume high task execution quality is controlled.
+  - Choice-order bias:
+    - Keep (A) Follow / (B) Not follow fixed to match the paper. Do not shuffle option order.
+  - Tokenization edge cases for ‘A’/‘B’:
+    - Ensure you probe the variant without a leading space (the template ends with “(” with no space). Validate by inspecting the tokenizer’s mapping for single-character tokens ‘A’ and ‘B’.
+  - Entropy computation:
+    - Requires access to full next-token distributions per step; if not available for a given model API, record the metric as [unsupported] for that model and exclude it from its macro-average (report counts).
+  - Numerical stability:
+    - Clamp probabilities to [1e−12, 1] before log. When exponentiating sum_logp, prefer using sum_logp directly for AUROC to avoid underflow; AUROC is scale/shift invariant.
+
+- Batching and efficiency:
+  - Use batch_generate for:
+    - IFEval response generation.
+    - Verbalized-confidence scoring prompts (meta-evaluation).
+    - Binary-choice prompts for p(true).
+  - For logit-based metrics (teacher-forced passes), batch inputs by similar sequence lengths to optimize throughput.
+
+- Reporting (correspondence to paper elements):
+  - IFEval baseline: reproduce macro-average AUROC and per-instruction-type AUROC (Table 1; Appendix Table 5).
+  - Controlled-Easy, Controlled-Hard, Realistic: report macro-average AUROC per method and per model (Table 4) and per-instruction-type breakdowns (Appendix Table 9).
+  - Include token-length diagnostics akin to Figure 2/Appendix Table 11: mean±std per class (correct vs incorrect or subtle), per instruction type, and overall.
+
+- Missing values:
+  - Any unsupported metric due to API/logit limitations should be marked as [unsupported].
+  - Any required max_new_tokens or similar decoding parameter not specified in the paper should be set to reasonable defaults and annotated as [uncertain].

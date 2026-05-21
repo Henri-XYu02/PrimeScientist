@@ -1,0 +1,232 @@
+You are a research agent. Conduct research and experiment about the question: “Do large language models accurately capture the irrational aspects of human decision making, or do they instead assume that people behave according to rational choice theories (such as expected value theory)?
+
+You have access to the following resources:
+
+Model:
+- You can call these models using: from utils.llm_inference import LLMInference
+- API key is provided with the LLMInference initialization function, computation budget is 10000 API calls per model
+
+- OpenAI's gpt-4o, gpt-4-Turbo
+- Load with HuggingFace: meta-llama/Llama-3.1-8B, meta-llama/Llama-3.1-70B
+- Claude's claude-3-opus-20240229
+
+Datasets:
+- choices13k: you can either load the raw data from /data/choices13k/ or load the human-readable version from
+```python
+from datasets import load_dataset
+ds = load_dataset("Josephgflowers/Risky_Choices")
+```
+
+Evaluation Methods:
+- Evaluate introspective human-modeling abilities of LLMs using the risky choice paradigm. Each model is tested on three forward modeling tasks: predicting individual human choices, estimating population-level choice proportions, and simulating its own choices with results compared to empirical human decision probabilities P(A).
+
+Constraint:
+- You should **NOT** use any web search tool or try to answer the question based on your prior knowledge, but run **FULL** end to end experiment and draw conclusion from your experiment results. 
+- When loading dataset using ```load_dataset("Josephgflowers/Risky_Choices")```, don't try to add other arguments like "cache_dir".
+
+
+Please design and execute experiments to investigate this research question. Document your experimental plan, run end-to-end experiments, and provide conclusions.
+
+---
+
+## Experimental Design
+
+1) Forward-1: Predict individual choices (binary A/B)
+- Procedure:
+  - Data filtering: use only problems where probabilities are explicitly shown and [uncertain: without feedback trials]. Target count ≈ 9,831 problems after filtering.
+  - For each problem:
+    - Randomly assign which dataset option is labeled “Machine A” vs “Machine B” (coin flip). Keep this assignment fixed for all prompts for that problem instance.
+    - Render each machine as a textual description of its outcomes as in the prompt templates below (use dollar values exactly as in the dataset; do not scale or floor negatives in evaluation).
+  - Prompting:
+    - Zero-shot prompt: use “LLMs predict individual human participant’s choice” template from Table 5 (Appendix A). Do not include any additional instructions beyond the template.
+    - CoT prompt: use chain-of-thought version from Table 6 (Appendix A), ending with: “Let’s think step by step before answering with A or B:”.
+  - Sampling:
+    - Zero-shot: run n completions per problem, where n equals the number of human participant responses recorded for that problem in the dataset (range 15–33; field name [uncertain], use the problem-level sample size).
+    - CoT: 1 completion per problem at deterministic temperature.
+  - Temperatures:
+    - Zero-shot: temperature = 0.7
+    - CoT: temperature = 0.0
+  - Shuffling controls: only shuffle which option is A/B. Do not shuffle internal outcome ordering within each machine (to preserve the dataset structure); if your data source lists outcomes without order, order them by descending probability.
+- What to record:
+  - Raw model outputs per completion (full text).
+  - Extracted final choice (A/B).
+  - For zero-shot: per-problem empirical p_model(A) = (#A)/(#A + #B).
+  - For CoT: per-problem p_model(A) ∈ {0,1} from the single completion.
+- Correspondence: Section 3; Table 1 (vs humans), Table 2 (vs EV); Appendix B, C, E.
+
+2) Forward-2: Predict population choice proportions (P(A), P(B))
+- Procedure:
+  - Same data filtering and A/B randomization as Forward-1.
+  - Prompting:
+    - Zero-shot and CoT use “LLMs predict the human choice distribution” templates from Tables 5 and 6 respectively, requesting JSON with percentages.
+  - Sampling: 1 completion per problem for both zero-shot and CoT.
+  - Temperatures: both at 0.0.
+- What to record:
+  - Raw response text.
+  - Parsed JSON percentages for A and B; normalized to sum to 100 (see Evaluation Details).
+  - Convert to p_model(A) ∈ [0,1].
+- Correspondence: Section B (Appendix); Tables 7–8.
+
+3) Forward-3: Simulate a participant (binary A/B)
+- Procedure:
+  - Same data filtering and A/B randomization as Forward-1.
+  - Prompting:
+    - Zero-shot and CoT use “LLMs act as human participant” templates from Tables 5 and 6 respectively.
+  - Sampling:
+    - Zero-shot: n completions per problem, n equals the number of human responses for that problem (range 15–33).
+    - CoT: 1 completion per problem.
+  - Temperatures:
+    - Zero-shot: 0.7
+    - CoT: 0.0
+- What to record:
+  - Raw outputs and extracted A/B.
+  - Aggregate per-problem p_model(A).
+- Correspondence: Section 3; Appendix B; Tables 9–10.
+
+4) Inverse-1: Inference from choices (candies; positive utilities)
+- Procedure:
+  - Decisions: reconstruct all 47 decisions from Table 18 (Appendix H). The target item is x and appears in the chosen option in every decision.
+  - Context: “candies” (all utilities positive).
+  - Pairwise evaluation:
+    - Build all unordered pairs of distinct decisions: 47 choose 2 = 1,081 pairs.
+    - For each pair, randomize:
+      - Order of the two decisions in the prompt (which is “Choice 1” vs “Choice 2”).
+      - Within each decision, randomize the order of options (columns) while keeping the chosen option as the first-listed option for that decision.
+      - Within each option, randomize the order of items (letters), but keep x as written “x”.
+      - Randomly assign color names to letters a,b,c,d uniquely per prompt (e.g., red, blue, yellow, brown) and map x consistently to “black” within that prompt. Re-draw a fresh mapping for every prompt to prevent lexical leakage.
+    - Prompting:
+      - Zero-shot: Table 16 (Appendix G). End with “Please respond with either "Choice 1" or "Choice 2". Do not include anything else in your answer.”
+      - CoT: Table 17 (Appendix G). End with “Let’s think step by step.”
+      - Add a single line before the final request: “Avoid ties; if uncertain, pick the one that is even slightly stronger.”
+    - Temperatures: both zero-shot and CoT use temperature = 1.0.
+    - Samples: repeat the full set of pairwise comparisons M times with independent randomizations to emulate multiple observers: M = 43.
+  - Parsing and aggregation:
+    - Parse outputs into {1, 2, tie} using a rule-based parser (see Implementation Notes).
+    - For each sample m, compute for each decision d: wins_m(d) = (#pairs where d chosen) + 0.5*(#ties involving d).
+    - Convert wins_m to a ranking r_m by sorting descending. Break exact ties by the smallest average opponent rank (if needed).
+    - Aggregate across samples: r̄ = mean rank of each decision across m=1..M.
+- What to record:
+  - Full raw outputs per pair and sample.
+  - Parsed pairwise outcomes.
+  - Per-sample rankings and the averaged ranking vector r̄ (length 47).
+- Correspondence: Section 4; Table 4 (positive context); Figures 3–5 (positive CoT).
+
+5) Inverse-2: Inference from choices (electric shocks; negative utilities)
+- Procedure:
+  - Identical to Inverse-1 except the context is “electric shocks,” where all item utilities are assumed negative.
+  - Replace candy color names with neutral “Shock A,” “Shock B,” etc., mapped to letters a–d for the distractors; map x to “Shock X.” Randomize which letter is called which shock label independently per prompt.
+  - Samples: M = 42.
+  - Temperatures: same as Inverse-1.
+- What to record:
+  - Same as Inverse-1.
+- Correspondence: Section 4; Table 4 (negative context); Figures 6–7 (negative CoT).
+
+6) Ablation A: Temperature sweep (forward tasks)
+- Procedure:
+  - Use Forward-1 (predict individual choices) with both zero-shot and CoT prompts.
+  - Temperatures: 0.0, 0.5, 1.0, 1.5, 2.0.
+  - Completions: as in Forward-1 (n per problem for zero-shot; 1 for CoT). If the model fails to return a final A/B at very high temperatures, record as “model unable” and exclude from metrics.
+- What to record:
+  - Correlation with human proportions and with expected value for each temperature and prompting style.
+- Correspondence: Appendix E.1; Tables 12–13.
+
+7) Ablation B: Demographic personas (forward tasks)
+- Procedure:
+  - Repeat Forward-1 at zero-shot and CoT with the following prompt modifier inserted immediately after the first sentence describing the decision maker:
+    - “The person is a [GENDER] aged [AGE-RANGE].”
+  - Age ranges: 18–35, 45–60, 65–85. Genders: Woman, Man. Also run a non-human variant by replacing “person” with “monkey” and removing the demographic sentence.
+- What to record:
+  - Same outputs as Forward-1 and correlations vs humans and vs EV per demographic.
+- Correspondence: Appendix E.2–E.3; Tables 14–15.
+
+8) Appendix D replication: Behavioral model fitting to zero-shot outputs
+- Procedure:
+  - Use Forward-1 zero-shot outputs p_LLM(A) (aggregated per problem across completions).
+  - Fit the following behavioral models to the same set of problems by minimizing MSE between model predictions p_model(A) and p_LLM(A):
+    - Heuristic/counterfactual set (e.g., Better-Than-Average, Equiprobable, Low Payoff Elimination, Low Expected Payoff Elimination, Probable, Minimax, Maximax, Priority Heuristic, Disappointment Theory with EV/EU/No-Rescale, Regret Theory with EV/EU) [exact formulations from He et al., 2022; parameterizations [uncertain]].
+    - Subjective Expected Utility family: Expected Value (no parameters), Expected Utility (power utility u(x)=sign(x)|x|^α, α∈(0,2]), Prospect Theory (piecewise power value v(x)=x^α for x≥0, v(x)=-λ(-x)^β for x<0 with α,β∈(0,2], λ>0; probability weighting w(p)=exp(-η(-ln p)^γ), η>0, γ>0), Transfer-of-Attention-Exchange (TAX) [parameterization [uncertain]].
+    - Mixture of Theories (MOT): convex mixture of two utility functions and two probability weighting functions; mixture weights and parameters fit via MSE [functional forms [uncertain]].
+  - For each model, compute its predicted binary choice or probability via a Luce/softmax choice rule with inverse temperature τ [uncertain] (if needed), then evaluate MSE to LLM proportions.
+- What to record:
+  - Fitted parameters, final MSE per model; model ranking by MSE.
+- Correspondence: Appendix D; Table 11.
+
+## Evaluation Details
+
+- Pre-processing and normalization:
+  - Dataset filtering: exclude “ambiguous” problems (no explicit probabilities). Also exclude [uncertain: problems with feedback present] to match the ≈9,831 subset.
+  - Mapping to A/B: record a per-problem RNG seed (e.g., hash of problem_id) to deterministically swap options for reproducibility.
+  - Forward-2 JSON outputs:
+    - Accept keys "A"/"B" (case-insensitive). If not valid JSON, attempt regex extraction of two numeric percentages in order of lines mentioning Machine A then Machine B.
+    - Normalize negatives to zero, clip to [0,100], then renormalize so A%+B%=100 within a tolerance of ±1. Convert to p_model(A)=A%/100.
+  - Forward-1/3 parsing:
+    - Extract the final letter ‘A’ or ‘B’ using a regex on the last line. If multiple occurrences, take the last explicit uppercase A/B token not within a word.
+    - For CoT, prefer the last standalone ‘A’/‘B’. If ambiguous, fall back to the first uppercase A/B after a colon or “Answer:”.
+  - Inverse parsing:
+    - Try strict match for “Choice 1” or “Choice 2”.
+    - Else accept “1” or “2” if a single-digit line.
+    - If “tie” or explicit equivalence, record tie. If no parse, re-prompt once with: “Please classify your previous answer as exactly one of: Choice 1 / Choice 2 / tie.”
+- Expected value computation:
+  - EV(option) = sum_i q_i * r_i using the problem’s given probabilities q_i and dollar outcomes r_i. Ignore the 10% bonus and the $0 floor for negative outcomes in EV (those are prompt context only).
+  - EV tie-handling: if |EV_A − EV_B| < 1e-8, treat as tie with EV_model(A)=0.5; otherwise EV_model(A)=1 if EV_A>EV_B else 0.
+- Human ground truth:
+  - Use per-problem empirical human P_hum(A) from the dataset. If counts are given, P_hum(A)=n_A/(n_A+n_B).
+- Aggregation (forward tasks):
+  - Per problem i, compute p̂_i = p_model(A).
+  - Metrics:
+    - Pearson r: scipy.stats.pearsonr({p̂_i}, {P_hum_i}).
+    - Spearman ρ: scipy.stats.spearmanr({p̂_i}, {P_hum_i}), average-rank method for ties.
+    - MSE: mean_i (p̂_i − P_hum_i)^2.
+  - Correlation vs EV: use the same p̂_i vector but replace human vector with {EV_model(A)_i} ∈ {0,0.5,1}.
+  - Report all metrics across the full filtered problem set.
+- Aggregation (inverse tasks):
+  - For each sample m:
+    - Wins score: for each decision d, wins_m(d)=Σ_{d’≠d} [1{d beats d’}] + 0.5*Σ_{d’≠d} [1{tie with d’}].
+    - Ranking r_m is the descending sort of wins_m; for ties, break by lower average opponent rank (computed iteratively) or leave as averaged ranks (compatible with Spearman).
+  - Average ranking: r̄(d) = mean_m r_m(d). If using averaged ranks per sample, average those directly.
+  - Correlations:
+    - Against human ranking vector r_hum (length 47): ρ = spearmanr(r̄, r_hum).
+    - Against rational models: compute ρ with absolute utility and relative utility predicted rankings (see below), as well as with “likelihood” and “marginal likelihood” rankings.
+- Rational model computations for inverse tasks:
+  - Forward model choice likelihood (Luce/softmax): p(c=oj | u, A) = exp(U_j) / Σ_k exp(U_k), where U_j = Σ_{x∈oj} u_x (linear additivity).
+  - Posterior p(u | c, A) ∝ p(c | u, A) p(u). Prior p(u) [uncertain: use independent zero-mean Gaussian N(0, σ^2) with σ=1].
+  - Absolute utility score for x: E[ u_x | c, A ] estimated by Monte Carlo over u ~ p(u|c,A) (e.g., 50k samples) [budget permitting; else 10k].
+  - Relative utility score for x: p(∀i, u_x > u_i | c, A) estimated by the same posterior samples.
+  - Likelihood-only score: p(c | ū, A) using a single fixed utility vector ū with ū_x = 1, ū_others = 1 (or [uncertain: zero-mean]) and ranking by that scalar (use as a simple baseline).
+  - Marginal likelihood score: 1/p(c | A) estimated by Monte Carlo over u ~ p(u) (same prior as above), then invert. Rank by this “surprisal”-like score.
+  - For each decision, compute the respective scalar score and rank decisions accordingly; then compute Spearman correlations with LLM r̄ and with humans.
+- Statistical reporting:
+  - Report two-sided p-values from scipy.stats for Pearson/Spearman.
+  - Confidence intervals via bootstrap:
+    - Forward tasks: resample problems with replacement (B=1,000) to get 95% CIs for r, ρ, and MSE.
+    - Inverse tasks: resample samples m with replacement (B=1,000) to get 95% CIs for ρ.
+
+## Implementation Notes
+
+- Dataset fields:
+  - Use the human-readable dataset loader. Filter to exclude ambiguous problems where probabilities are hidden; also match the paper’s subset by excluding [uncertain: problems with feedback]. If the dataset does not expose explicit flags, approximate by selecting problems where both options list explicit non-null probabilities and [uncertain: a “feedback==False” flag if available].
+- Prompt templates (exact text):
+  - Use the three forward templates from Appendix A (Tables 5 and 6). Do not alter wording other than inserting the machine outcome strings. For inverse prompts, use Tables 16–17 verbatim, only substituting the randomized item names and bags/options content.
+- Constructing machine descriptions:
+  - For each option, stringify outcomes in a compact, consistent format for insertion into the prompt placeholders “{}”, e.g., “50% chance to win $10, 50% chance to win $0” (for gains) or “20% chance to lose $5, 80% chance to win $0” when negatives appear. Preserve the numerical values exactly; do not apply the 10% bonus or floor in the machine description.
+- Output parsing robustness:
+  - Forward-1/3: If the model includes explanatory text in zero-shot, still extract the last standalone “A” or “B”. If both appear in the same final line, discard and re-ask once with a stricter instruction: “Only answer with A or B on a single line.”
+  - Forward-2: If JSON parsing fails, attempt to extract the first two percentages via regex r'(\d+(\.\d+)?)\s*%'. If totals differ from 100 by >1, renormalize.
+  - Inverse: If CoT outputs lack a final classification, append a clarifier prompt asking: “Classify: Choice 1 / Choice 2 / tie” and parse that reply.
+- Randomization and reproducibility:
+  - Fix a global seed (e.g., 2025) for shuffling A/B per problem and all inverse-task randomizations (order of decisions, options within a decision, items within options, and item-name mappings).
+  - Record all seeds and any per-prompt randomization artifacts to enable exact reruns.
+- Temperatures and determinism:
+  - CoT at temperature 0.0 for forward tasks is required to match determinism reported.
+  - Zero-shot at temperature 0.7 for Forward-1/3 to maintain diversity across completions.
+  - Inverse tasks use temperature 1.0 to mirror the original settings.
+- Pairwise-comparison scale:
+  - Full pairwise evaluation requires 1,081 queries per sample. With M=43/42 samples per context and two prompting styles, this can be expensive. If compute becomes prohibitive, a lower-cost alternative is to approximate rankings with adaptive sorting-based comparisons (e.g., quicksort tournament O(n log n) per sample) or to reduce M, but note this deviates from the paper’s exact protocol.
+- Order of operations:
+  - For forward tasks, compute metrics vs humans and vs EV separately for zero-shot and CoT; do not pool predictions across prompting styles.
+  - For inverse tasks, compute per-context correlations (candies vs shocks) independently; do not mix contexts.
+- Edge cases:
+  - EV ties are rare; handle by assigning EV_model(A)=0.5 for ties to avoid undefined Pearson with constant vectors.
+  - If a model fails to respond or yields “model unable” at high temperatures (Ablation A), log the failure and exclude that temperature from aggregated statistics.
+- Behavioral model fitting (Appendix D):
+  - Implementations of the 18 models require careful adherence to the formulas in He et al. (2022) and Peterson et al. (2021). Where exact forms or default parameter ranges are unspecified in this plan, mark as [uncertain], document chosen parameter bounds, and use multi-start optimization (e.g., random restarts of L-BFGS-B) to minimize MSE to LLM outputs.

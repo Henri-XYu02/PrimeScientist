@@ -1,0 +1,264 @@
+You are a research agent. Conduct research and experiments to answer the question: “Does increasing the amount of LLM generated persona content systematically worsen population level simulation fidelity?”
+You may use population level multiple choice opinion questions and U.S. presidential election simulations (2016, 2020, 2024) with real world reference outcomes.
+
+You have access to the following resources:
+
+Models:
+- Llama 3.1 70B via the provided inference utilities
+- You can call these models using: from utils.llm_inference import LLMInference
+- API key is provided with the LLMInference initialization function
+- Computational budget: 1000 API calls per model
+
+Datasets:
+```Python
+from datasets import load_dataset
+
+# Login using e.g. `huggingface-cli login` to access this dataset
+ds = load_dataset("Tianyi-Lab/Personas")
+```
+
+Please design and execute experiments to investigate this research question. Document your experimental plan, run **FULL** experiments, and provide conclusions at different levels of detail.
+
+---
+
+## Experimental Design
+
+1) Election Simulation (2016, 2020, 2024)
+- Procedure:
+  - Persona sets:
+    - Construct four persona types: Meta, Objective Tabular, Subjective Tabular, and Descriptive.
+    - Sampling: sample 1,000 Meta personas per U.S. state from the joint distribution over Age, Sex, Race, State ([uncertain] whether DC is included; default to the 50 states).
+    - Augmentation: for each sampled Meta persona, generate one Objective Tabular, one Subjective Tabular, and one Descriptive persona (i.e., 1,000 personas per state per persona type).
+  - Simulation question per year (forced-choice, 2 options):
+    - 2016: “If you were to vote in the 2016 U.S. presidential election today, who would you vote for?” Options: A) Hillary Clinton, B) Donald Trump
+    - 2020: “If you were to vote in the 2020 U.S. presidential election today, who would you vote for?” Options: A) Joe Biden, B) Donald Trump
+    - 2024: “If you were to vote in the 2024 U.S. presidential election today, who would you vote for?” Options: A) Kamala Harris, B) Donald Trump
+  - Prompting strategy:
+    - Use the Opinion Simulation Prompt (see Implementation Notes) with the persona inserted and the question plus options appended. Require output in the form “Answer: [Letter]”.
+    - One question per call (no batching) to avoid cross-question contamination.
+  - Ordering:
+    - Randomly shuffle persona order within each state before simulation.
+    - Run years independently; within a year, evaluate persona types in the order: Meta → Objective → Subjective → Descriptive.
+  - Number of samples:
+    - 1,000 personas/state × 50 states × 4 persona types × 3 elections = 600,000 persona-question simulations.
+  - What to record:
+    - Raw model outputs per persona (full string).
+    - Parsed answer letter.
+    - State, persona type, year, and candidate mapping for the chosen letter.
+    - Per-state support rates for each candidate and persona type.
+    - Invalid/ambiguous output counts.
+  - Correspondence:
+    - Figures 4a–c (maps for 2016, 2020, 2024) and Section 3.1.
+
+2) Cross-Model Simulation Matrix (Personas × Simulation Model)
+- Procedure:
+  - Use the exact same four persona sets from task (1) (frozen once generated).
+  - For each persona set, run the simulation prompt on each available simulation model.
+  - Years: 2016, 2020, 2024 as in task (1).
+  - Input format, prompting, ordering, and recording identical to task (1).
+  - Number of samples:
+    - Identical per model as in task (1). Total calls scale linearly with the number of simulation models.
+  - What to record:
+    - Alignment scores per (persona-generation model, simulation model) pair, per year and persona type.
+  - Correspondence:
+    - Figure 5 and Section 3.1 (cross-simulation analysis).
+
+3) General-Domain Opinion Questions (20 curated items across 5 domains)
+- Procedure:
+  - Questions: 20 multiple-choice questions spanning climate, consumer choices, education, entertainment, and technology. Use the nine directly visible in the paper for faithful replication and include the remaining 11 from the appendix ([uncertain] exact wordings for those 11; use the paper’s appendix where available).
+  - For each persona type, simulate one response per persona for each question (forced-choice).
+  - Input format: Opinion Simulation Prompt with the persona and the given question/options. Output “Answer: [Letter]”.
+  - Ordering:
+    - Randomize question order per persona to minimize order effects.
+    - Simulate persona types in fixed order: Meta → Objective → Subjective → Descriptive.
+  - Number of samples:
+    - 1,000 personas/state × 50 states × 4 persona types × 20 questions = 4,000,000 persona-question simulations.
+  - What to record:
+    - Raw outputs, parsed answers, question ID/domain, persona type, state.
+    - Per-question, per-persona-type national choice distribution (aggregate over all states/personas).
+  - Correspondence:
+    - Figure 6 and Section 3.2.
+
+4) OpinionQA Alignment (first 500 questions, 15 topics)
+- Procedure:
+  - Use the first 500 questions from the dataset.
+  - For each question:
+    - Extract ordered options and the ground-truth US population response distribution provided by the dataset.
+    - For each persona type, simulate responses for all personas (forced-choice).
+  - Input format: Opinion Simulation Prompt with persona + OpinionQA question/options.
+  - Ordering:
+    - Randomize question order per persona.
+    - Fixed persona-type order: Meta → Objective → Subjective → Descriptive.
+  - Number of samples:
+    - 1,000 personas/state × 50 states × 4 persona types × 500 questions = 50,000,000 persona-question simulations.
+  - What to record:
+    - Raw outputs, parsed answers, per-question simulated choice distribution for each persona type.
+    - Computed per-question alignment score versus the dataset’s ground-truth distribution.
+    - Topic metadata and per-topic aggregates.
+  - Correspondence:
+    - Section 3.2, Figure 7 (topic variance ranking).
+
+5) Sentiment and Subjectivity of Persona Text
+- Procedure:
+  - For generated persona types only: Objective Tabular, Subjective Tabular, and Descriptive.
+  - Text to analyze:
+    - Objective/Subjective Tabular: linearize all string-valued fields in a consistent, fixed field order into one text per persona (exclude IDs and non-textual numeric-only scalars like Big Five numeric values).
+    - Descriptive: use the full freeform persona narrative.
+  - Tool: TextBlob sentiment analysis.
+  - Compute per-persona polarity and subjectivity, then aggregate (mean, std, 95% CI via bootstrap with 1,000 resamples).
+  - Number of samples:
+    - 1,000 personas/state × 50 states × 3 persona types = 150,000 texts analyzed.
+  - What to record:
+    - Per-persona polarity and subjectivity scores.
+    - Per-type aggregate stats and distributions.
+  - Correspondence:
+    - Figure 8 and Section 4.
+
+6) Word Cloud for Florida Descriptive Personas
+- Procedure:
+  - Filter Descriptive personas where State == Florida.
+  - Concatenate all persona texts (after minimal cleaning; see Implementation Notes).
+  - Generate a single word cloud image from aggregated text.
+  - What to record:
+    - Token frequency dictionary, final image.
+  - Correspondence:
+    - Figure 9 and Section 4.
+
+
+## Evaluation Details
+
+- Output parsing and normalization:
+  - Expected format: “Answer: [Letter]” where [Letter] ∈ {A, B, C, D} as applicable.
+  - Parser:
+    - Strip whitespace; case-insensitive search for the first capital letter among the valid options defined for that question.
+    - If multiple letters present, take the first valid occurrence.
+    - If no valid letter found, mark as invalid; for forced-choice aggregation, sample uniformly from valid options only for the aggregate distribution used in alignment scoring, and also count this as an “imputed” response. Report invalid and imputed counts separately.
+  - Option mapping:
+    - Map letters A..K to ordinal positions 1..K using the dataset-provided order for OpinionQA, and the experiment-defined order for election and domain questions.
+
+- Elections (per state, binary choices):
+  - Let p_hat_s be the simulated support rate for candidate A in state s (i.e., count of A divided by total valid+imputed responses in s), and p_s the ground-truth support rate for candidate A in state s.
+  - Per-state alignment: a_s = 1 − |p_hat_s − p_s|.
+  - Overall alignment aggregation:
+    - Compute unweighted mean over states: A = (1/|S|) Σ_s a_s, where S is the set of states used ([uncertain] include DC or not; default to 50 states).
+    - Also report median and interquartile range across states.
+  - Edge cases:
+    - If a state has < N_min valid responses ([uncertain], default N_min=50), still include due to forced-choice imputation; report the valid/imputed breakdown.
+
+- Cross-Model Matrix:
+  - For each (persona-generation model, simulation model, year, persona type), compute the overall alignment A as above.
+  - Present per-cell A, along with 95% bootstrap CIs across states (1,000 bootstrap samples over states).
+
+- General-Domain 20 Questions:
+  - For each question and persona type, compute national choice distribution by aggregating across all personas (all states pooled equally).
+  - Report percentages per option and plot side-by-side bars by persona type.
+  - No alignment to ground truth here (none available).
+
+- OpinionQA (K-choice, ordered by dataset order):
+  - For each question q with K options:
+    - Let p_hat_q be the simulated K-dimensional probability vector (counts normalized), with option indices i=1..K in dataset order.
+    - Let p_q be the ground-truth response distribution over the same ordered options.
+    - Define a 1D ground metric with unit spacing between adjacent indices (d(i,j)=|i−j|).
+    - Compute the 1-Wasserstein (Earth Mover’s) distance W1(p_hat_q, p_q) along this line using cumulative sums:
+      - W1 = Σ_{i=1}^{K-1} |CDF_hat(i) − CDF(i)|
+    - Alignment score: A_q = 1 − W1(p_hat_q, p_q).
+  - Aggregation:
+    - Overall: report mean, median, and 95% bootstrap CI (1,000 bootstrap samples over questions) of A_q per persona type.
+    - Topic-level:
+      - For each topic t, collect questions Q_t; compute mean Ā_t,type for each persona type; compute variance across persona types Var_t = Var({Ā_t,type}).
+      - Normalized variance for visualization: NV_t = (Var_t − min_t Var_t)/(max_t Var_t − min_t Var_t) ([uncertain] exact normalization used in the paper; use min-max normalization across topics).
+  - Edge cases:
+    - If dataset contains “Don’t know/Refused” responses, treat them as the last option in order.
+    - If K varies across questions, use the question-specific K.
+
+- Sentiment Analysis:
+  - For each persona text, compute:
+    - polarity ∈ [−1,1] = TextBlob(text).sentiment.polarity
+    - subjectivity ∈ [0,1] = TextBlob(text).sentiment.subjectivity
+  - Aggregation:
+    - For each persona type (Objective Tabular, Subjective Tabular, Descriptive), report mean, std, and 95% bootstrap CI (1,000 resamples over personas).
+  - Pre-processing:
+    - Use raw text as linearized from fields (Objective/Subjective Tabular) or the descriptive narrative; do not remove stopwords or punctuation for the sentiment computation to mirror the paper’s approach.
+
+- Word Cloud:
+  - Tokenization:
+    - Lowercase, remove punctuation, remove standard English stopwords, remove numeric-only tokens; keep unigrams.
+  - Weights:
+    - Use raw term frequencies aggregated across all Florida Descriptive persona texts.
+  - Visualization:
+    - Generate a single word cloud image with a fixed random seed ([uncertain], recommend seed=42) and a maximum of 200 words displayed.
+
+
+## Implementation Notes
+
+- Persona generation prompts (verbatim, use as system+instruction content):
+  - Global system instruction for persona generation:
+    - “You are an AI assistant specialized in detailed and unbiased persona generation for opinion simulations. Your task is to generate a specific, realistic, and diverse persona based on the provided demographic information and fill in a comprehensive JSON template.”
+  - Objective Tabular Persona prompt (key constraints):
+    - Must select ONLY from allowed VALUE RANGES AND CATEGORIES for all listed fields.
+    - Response must be placed entirely in the section starting with “Persona:” followed by the completed FINAL PERSONA TEMPLATE and nothing else.
+    - Do not add extra features. Do not elaborate beyond category labels for constrained fields.
+    - Include all fields shown in the template (AGE, SEX, RACE, STATE, ANCESTRY, HOUSEHOLD_LANGUAGE, EDUCATION, EMPLOYMENT_STATUS, CLASS_OF_WORKER, INDUSTRY_CATEGORY, OCCUPATION_CATEGORY, INCOME, MARITAL_STATUS, HOUSEHOLD_TYPE, FAMILY_PRESENCE_AND_AGE, PLACE_OF_BIRTH, CITIZENSHIP, VETERAN_STATUS, DISABILITY, HEALTH_INSURANCE).
+  - Subjective Tabular Persona prompt (key constraints):
+    - Same VALUE RANGES AND CATEGORIES constraints as Objective for enumerated fields.
+    - For other fields (e.g., DETAILED_JOB_DESCRIPTION, BIG_FIVE_SCORES object, DEFINING_QUIRKS, MANNERISMS, PERSONAL_TIME, LIFESTYLE, IDEOLOGY, POLITICAL_VIEWS, RELIGION, COGNITIVE_DIFFICULTY, ABILITY_TO_SPEAK_ENGLISH, VISION_DIFFICULTY, FERTILITY, HEARING_DIFFICULTY), provide succinct descriptions; be as objective as possible.
+    - Start with “Persona:” and provide only the filled template block.
+  - Descriptive Persona prompt (key constraints):
+    - Input metadata is the Meta persona (Age, Sex, Race, State, etc.). The output is a freeform, vivid, three-dimensional persona narrative fully consistent with ALL metadata.
+    - Emphasize diversity and specificity; start response with “Persona:” and provide only the description text.
+  - Note: Keep the exact field names and categories as shown; do not deviate. Enforce JSON-serializability for tabular personas (strict quotes around keys/values).
+
+- Opinion Simulation Prompt (verbatim behavioral constraints):
+  - Task: simulate a persona answering a multiple-choice opinion question; pick exactly one option.
+  - Guidelines: be faithful to persona; focus on relevant aspects; be objective; avoid injecting politically correct views unrelated to persona.
+  - Instructions:
+    - Choose ONE option (A, B, C, or D depending on the number of options).
+    - If multiple answers are possible, randomly select based on their probability ([uncertain] not computable from the model; rely on model’s single choice).
+    - Always pick an option; treat as forced-choice.
+    - Output format: “Answer: [Letter]” only, no explanation.
+  - Insert persona under a “PERSONA” section and the question under a “QUESTION” section, then “YOUR RESPONSE”.
+
+- Ordering and independence:
+  - Generate all persona sets first (freeze), then run simulations. Do not interleave generation and simulation to avoid hidden prompt bleed or model state carryover.
+  - One persona-question per API call (no conversational history). Do not include prior Q/A or chain-of-thought. The only context should be the system instruction (if used), the persona, and the current question.
+
+- Decoding settings:
+  - Simulation (answer selection): deterministic decoding to ensure consistent mapping from persona attributes to choice ([uncertain], recommend temperature=0.0, top_p=1.0).
+  - Persona generation: enable diversity while respecting constraints ([uncertain], recommend temperature=0.7, top_p=0.95). For Objective Tabular, keep temperature lower ([uncertain], e.g., 0.3) to reduce off-category drift.
+
+- Validation and parsing:
+  - For Objective/Subjective Tabular personas:
+    - Validate that all constrained fields exactly match one of the allowed category strings; reject and regenerate up to 2 times if invalid.
+    - Ensure JSON can be parsed; if not, repair common formatting issues (e.g., stray commas) with a strict fixer; if unrepairable, regenerate.
+  - For Descriptive personas:
+    - Validate that all required metadata attributes are mentioned consistently (e.g., state, age bracket); if inconsistent, regenerate.
+
+- Ground truth sources for elections:
+  - Use official statewide popular vote percentages for the two candidates listed per year.
+  - If the source includes third-party candidates, renormalize the two major candidates’ shares to sum to 1.0 for p_s (i.e., p_s = D/(D+R), 1−p_s = R/(D+R)).
+  - Keep a frozen snapshot of the ground truth used for all runs.
+
+- Aggregation choices:
+  - National aggregates (non-election tasks) are computed by pooling all personas equally (since sampling is 1,000 per state). Do not reweight by state population unless explicitly required ([uncertain] not stated in the paper).
+
+- Topic variance ranking (OpinionQA):
+  - Topic mapping must come from the dataset metadata; if multiple topics tag a question, assign to the primary topic if available; otherwise include in all tagged topics and average (document this if it occurs) ([uncertain] whether multi-tagging occurs).
+  - Compute per-topic variance across persona types, then min-max normalize across topics for ranking, as specified above.
+
+- Florida word cloud specifics:
+  - Pre-processing: lowercase; remove punctuation; remove English stopwords; remove tokens shorter than 3 chars; lemmatization optional ([uncertain], default: no lemmatization).
+  - Fix random seed to ensure reproducibility ([uncertain], recommend 42). Limit to max_words=200, background=white.
+
+- Pitfalls and caveats called out in the paper:
+  - Increasing LLM-generated content in personas increases narrative freedom and can alter downstream simulated opinions; keep prompts and field constraints exact and consistent across persona types so the only systematic difference is the amount/type of LLM-generated content.
+  - Several simulation prompt variants were tested in the paper; to mirror their final setup, use the provided Opinion Simulation Prompt consistently.
+  - Do not rely on token-level logprobs; aggregate selected options as counts (as per Appendix A.3). Ensure forced-choice behavior even when the model returns unexpected text by applying the imputation rule and logging invalid/imputed rates.
+
+- Reproducibility:
+  - Fix random seeds for persona sampling (e.g., numpy and Python’s random at 1234).
+  - Log all prompt strings and decoding parameters with a content hash per call.
+  - Store both raw and normalized outputs; maintain a schema with persona_id, state, persona_type, question_id, option_set, raw_text, parsed_answer, valid_flag, imputed_flag.
+
+- Compute considerations:
+  - Large-scale runs can be parallelized by state and question shards. Ensure that shuffling is done deterministically per shard using seeded RNG.
+  - If constrained compute is unavoidable, downsample uniformly per state (e.g., 100 personas/state) while preserving equal-per-state sampling; document deviations from the paper’s N.

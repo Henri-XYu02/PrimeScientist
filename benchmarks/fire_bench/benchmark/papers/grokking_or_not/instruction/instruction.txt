@@ -1,0 +1,15 @@
+You are a research agent. Conduct research and experiment about the question: "How do over-parameterized neural networks behave when trained on small algorithmically-generated datasets, and what role do dataset size and regularization play in their training dynamics and generalization?"
+
+You have access to the following resources:
+
+Model:
+- A small decoder-only Transformer (a few hundred thousand parameters). Implement it from scratch using PyTorch. You should install necessary packages e.g. torch, numpy, matplotlib, scikit-learn etc.
+
+Datasets:
+- Algorithmically generated binary operation tables. You should programmatically construct at least two such datasets — for example, a modular arithmetic operation in a finite group, and a non-abelian operation such as a permutation-group product — so the experiment covers more than one algebraic structure. Split each into training/validation by holding out a random fraction of all equations.
+
+Goal:
+- Characterise the training-vs-validation curves on a fixed train/val split when the network is trained for a long time (well past convergence on training accuracy). Record the *full* trajectory at a resolution that lets you describe the relationship between training and validation performance — surprising delays or non-monotonicities are part of what's being asked.
+- Probe how (a) the size of the training fraction and (b) the choice of regularization (e.g., weight decay vs. none) affect the time and/or shape of generalization. Use multiple seeds where the metric of interest is "time to generalize".
+
+Document your experimental plan, run the experiments end-to-end, provide conclusions at different levels of detail, and report any notable phenomena you observe in the training dynamics and generalization behavior.

@@ -1,0 +1,187 @@
+You are a research agent. Conduct research and experiment about the question: "Can large language models, without any chain of thought prompts, reveal reasoning paths and improve answer accuracy by altering its decoding approach?"
+
+You have access to the following resources:
+
+Model:
+- mistralai/Mistral-7B-v0.1
+- Huggingface token is provided in .env
+- Inference functions via the provided utilities in /utils
+- You should install necessary packages e.g. torch, transformers, datasets etc.
+
+Datasets:
+- GSM8K (grade school math word problems):
+You can use the following code to load the dataset:
+```python
+from datasets import load_dataset
+ds = load_dataset("openai/gsm8k", "main")
+```
+
+Please design and execute experiments to investigate this research question. Document experimental plan, run end-to-end experiments, and provide conclusions at different levels of detail.
+
+---
+
+## Experimental Design
+
+1. CoT-decoding vs. greedy (no prompts; math word-problem benchmark)
+   - Procedure:
+     - Input format: prepend each question with the exact prefix "Q: {question}\nA:" and generate a continuation.
+     - Max new tokens: 200.
+     - First-step branching (default k = 10):
+       - Run the model once on the prefix to obtain the next-token distribution at decoding step 0.
+       - Take the top-k tokens by probability at step 0 (sorted descending). Define path 0 as the greedy path (top-1), and paths 1..(k-1) as alternative branches using the 2nd..k-th tokens as the first generated token.
+       - For each path, fix the chosen first token and continue with greedy decoding (argmax) to completion or until max tokens/EOS.
+     - Extract the predicted answer from each path as the last numerical value found in the path’s text continuation (see Evaluation Details for normalization).
+     - Score each path with the Δ confidence computed over the answer tokens (see Evaluation Details).
+     - Two selection variants per sample:
+       1) Max-path: choose the single path with the maximum Δ.
+       2) Aggregated-path: among distinct extracted answers a, select argmax_a Σ_k Δ_{k,a}, summing confidence over paths that yielded a.
+   - What to record:
+     - For every sample and each of the k paths: raw text continuation, generated token ids, per-step scores (logits/softmax), extracted answer string, tokenized answer span indices, per-token top1/top2 probabilities on the answer span, Δ_{k,answer}, total log-prob and length-normalized log-prob of the full continuation.
+     - For each selection variant: chosen answer, correctness vs. gold, and tie-break decisions (if any).
+     - Summary: per-sample correctness, and overall accuracy.
+   - Correspondence: Table 3 (rows without prompting), Table 7 (Methods without prompting: CoT-decoding max/agg path), §2.2 (CoT-decoding), Appendix D (settings).
+
+2. Decoding baseline comparisons (no prompts)
+   - Procedure (one continuation per question unless noted):
+     - Greedy decoding baseline: same input format and max tokens as above; extract last number.
+     - Top-k sampling: do_sample=True, top_k=10, temperature=1.0, top_p=1.0; max new tokens=200.
+     - Nucleus sampling: do_sample=True, top_p=0.9, temperature=1.0, top_k=0; max new tokens=200.
+     - Temperature sampling: do_sample=True, temperature=0.7, top_k=0, top_p=1.0; max new tokens=200.
+     - Beam search: num_beams=10, do_sample=False; choose the highest-prob beam; max new tokens=200.
+     - “Decode 10 paths, rank by model’s highest log-prob”: use the same first-step branching as in CoT-decoding (k=10), but select the path maximizing the unnormalized sum of token log-probs.
+     - “Decode 10 paths, rank by model’s highest length-normalized log-prob”: same as previous item, but select the path maximizing (sum log-prob / number of generated tokens).
+     - Self-consistency without CoT prompt (10 paths): sample 10 independent continuations under a fixed sampling config [uncertain], extract the answer from each, then majority vote; break ties by picking the answer with the highest total summed log-prob across tied answers [uncertain].
+   - What to record:
+     - For each baseline: raw continuation, extracted answer, per-step scores (when available), and correctness.
+     - For multi-path methods: all raw outputs and answers, tie-break rationale.
+   - Correspondence: Table 4 (decoding baselines), Table 2 (ranking strategies without Δ).
+
+3. k-ablation for CoT-decoding (no prompts)
+   - Procedure:
+     - Repeat Experiment 1 with k ∈ {1, 3, 5, 10, 20} (branch at the first decoding step only), using both Max-path and Aggregated-path selection.
+     - Keep all other settings fixed (prompt, max tokens, normalization).
+   - What to record:
+     - Accuracy vs. k for both selection variants; optionally also log mean Δ of selected answers.
+   - Correspondence: §3.1 “Choice of k” and Figure 5 (effect of k).
+
+4. Optional: CoT-decoding combined with zero-shot CoT prompting (for completeness of paper alignment)
+   - Procedure [optional]:
+     - Replace the input prefix with a zero-shot CoT instruction [uncertain exact wording], e.g., append a short instruction such as [uncertain] to the QA prefix, then run:
+       - Zero-shot CoT single decode (greedy).
+       - Self-consistency with zero-shot CoT prompt (10 samples; majority vote with tie-break as above).
+       - CoT-decoding (k=10) with the same prompt: Max-path and Aggregated-path selections.
+     - Max new tokens: [uncertain] (recommend 256–400 to avoid truncation under CoT prompting).
+   - What to record:
+     - As in Experiments 1–2, plus the exact CoT prompt string used.
+   - Correspondence: Table 7 (rows with prompting).
+
+
+
+## Evaluation Details
+
+- Answer extraction and normalization (math word-problem benchmark):
+  - From each model continuation, extract the last numeral substring via regex:
+    - Pattern: r"[-+]?\$?\d[\d,]*\.?\d*"
+    - Choose the last match in the decoded text.
+  - Cleaning:
+    - Remove leading currency symbols and trailing punctuation.
+    - Remove thousand separators (commas).
+  - Type conversion:
+    - If a decimal is present and equals an integer (e.g., “60.0”), cast to int.
+    - Else, leave as decimal; the gold is an integer, so cast gold to int and require exact integer equality after casting predicted to int only if its decimal part is zero; otherwise treat as mismatch.
+  - If no number is found, mark the prediction as incorrect and set Δ for that path to NaN (excluded from Δ-based selection; see fallback below).
+
+- Δ confidence computation (per path k):
+  - Let the tokenized answer span be positions t ∈ T in the generated continuation.
+  - For each t ∈ T, from the stored softmax at that step, obtain:
+    - p_top1(t) = max probability over the vocab
+    - p_top2(t) = second-largest probability over the vocab
+  - Δ_k,answer = (1 / |T|) * Σ_{t ∈ T} [p_top1(t) − p_top2(t)]
+  - Note:
+    - Use probabilities after softmax at each step where the corresponding generated token belongs to the extracted answer span.
+    - If any answer token position is out of range of captured scores (e.g., due to truncation), drop that token from T; if T becomes empty, treat Δ as NaN.
+
+- Path selection and aggregation:
+  - Max-path: among paths with valid Δ, select the path with maximal Δ; if all Δ are NaN, fall back to the greedy path (branch 0).
+  - Aggregated-path: group paths by their extracted answer a; for each a, compute ˜Δ_a = Σ_k Δ_{k,a} over all paths with valid Δ; select a* = argmax_a ˜Δ_a; if all ˜Δ are undefined, fall back to the greedy path’s extracted answer.
+
+- Alternative ranking baselines (Table 2 re-creations):
+  - Highest log-prob path: For each path, compute L = Σ_t log p(y_t | y_<t, prompt) over all generated tokens (excluding prompt); choose argmax L.
+  - Highest length-normalized log-prob path: compute L_norm = L / N_gen, where N_gen is the number of generated tokens; choose argmax L_norm.
+
+- Self-consistency without CoT prompt:
+  - Sample M=10 independent completions under a fixed sampling configuration [uncertain].
+  - Extract answer from each; compute the mode. If multiple answers tie, choose the one with the largest sum of per-token log-probs across its supporting samples [uncertain]. If still tied, choose the numerically smallest answer [uncertain].
+
+- Metric:
+  - Accuracy = (#correct) / (#evaluated).
+  - Per-sample → per-condition aggregation: compute correctness per sample, average over all samples in the split.
+  - Report also the number of filtered/invalid continuations (see below) and the number of Δ-invalid paths per sample (diagnostic only).
+
+- Pre- and post-filtering of continuations (no prompts setting):
+  - Filter out a path’s continuation before scoring if any of the following hold:
+    - Empty decoded text (length 0).
+    - The generated length equals max_new_tokens (suggesting truncation/looping).
+    - The continuation ends with a question mark (likely repeated prompt).
+  - If filtering removes all paths for a sample, count the sample as incorrect for that condition and log the failure case.
+
+- Reproducibility:
+  - Fix torch, numpy, and transformers generation seeds to a fixed value (e.g., 1234).
+  - Use return_dict_in_generate=True, output_scores=True to capture per-step logits/scores for Δ.
+  - Set pad_token_id = eos_token_id if the tokenizer lacks a pad token to avoid shape-related issues during batch generation.
+
+
+
+## Implementation Notes
+
+- Custom first-step branching is required:
+  - Use a manual decoding loop:
+    1) Encode the prefix "Q: {question}\nA:".
+    2) Forward pass to get logits for step 0; softmax to get probabilities; take top-k token ids (descending).
+    3) For each token id in this set, start a new sequence by appending that token and continue decoding greedily step-by-step, at each step:
+       - Compute logits; select argmax; append; store the softmax distribution and the chosen token id.
+       - Stop on EOS or when max_new_tokens reached.
+  - Do not exclude whitespace/newline branches at step 0; do exclude EOS as the first-step branch to avoid empty outputs.
+
+- Token-level score capture:
+  - For Δ, you need the top1 and top2 probabilities at each answer token position. When decoding manually, store the full softmax vector or at least the top-2 probabilities for each step.
+  - If using generate(), ensure output_scores=True and keep the “scores” list aligned to generated tokens.
+
+- Answer span token alignment:
+  - After extracting the textual answer string, re-tokenize it with the same tokenizer and find its tokenization in the generated token sequence via suffix alignment. If multiple alignments exist (rare), select the last occurrence (consistent with “last number” extraction).
+  - If tokenization mismatch occurs (e.g., whitespace or special tokens split numbers), match numeric sub-tokens greedily from the end.
+
+- Numerical normalization caveats:
+  - Strip currency symbols and thousand separators before numeric parsing.
+  - Treat “60.00” and “60” as equivalent; do not round non-integer decimals to the nearest integer unless their fractional part is exactly zero.
+  - If the gold label contains units in the dataset entry, parse the canonical numeric gold (e.g., from a dedicated answer field).
+
+- Beam search configuration:
+  - num_beams=10, early_stopping=True. Use the best (highest-probability) beam’s text for extraction.
+
+- Self-consistency sampling [uncertain]:
+  - Keep the sampling hyperparameters fixed across all samples; log them alongside results.
+  - Ensure each of the 10 samples is generated independently (distinct RNG state advances).
+
+- Heuristics for ill-formed outputs:
+  - Truncation/looping often manifests as sequences hitting max_new_tokens; filter such paths before scoring.
+  - Repetition of the prompt (ending with a question mark) should be filtered as per Appendix D guidance.
+  - If an implementation detects near-duplication of the prompt (e.g., high overlap ratio [uncertain threshold]), discard the path.
+
+- Order of operations:
+  - Run all “without prompting” conditions first: greedy, decoding baselines, Δ-based CoT-decoding (max-path, aggregated-path).
+  - Then run the k-ablation.
+  - Optional: run the “with prompting” conditions only after completing all no-prompt experiments.
+
+- Hyperparameters to mirror the paper:
+  - Input prefix: "Q: {question}\nA:" (no additional instructions).
+  - Max new tokens: 200 for the no-prompt math benchmark.
+  - First-step branching k: default 10; ablate over {1,3,5,10,20}.
+
+- Logging and artifacts:
+  - Persist per-sample JSON records including: prompt, all path texts, extracted answers, Δ per path, selected answer(s), correctness flags, and per-path log-prob summaries (sum and length-normalized).
+  - Maintain a run manifest with the exact decoding settings for each condition to ensure faithful replication.
+
+- Edge case fallbacks:
+  - If no valid Δ is available for any path in a sample, fall back to the greedy path’s extracted answer for both max-path and aggregation variants.
+  - If aggregation yields ties in ˜Δ across answers, select the answer whose supporting path has the highest Δ; if still tied, choose the numerically smallest answer [uncertain].

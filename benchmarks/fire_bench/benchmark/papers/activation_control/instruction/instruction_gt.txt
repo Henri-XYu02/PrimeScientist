@@ -1,0 +1,291 @@
+You are a research agent. Conduct research and experiment about the question: "Can we efficiently elicit long chain-of-thought reasoning in language models through activation-level interventions?"
+
+You have access to the following resources:
+
+Models:
+- Load with HuggingFace: Qwen/Qwen2.5-7B
+- Load with HuggingFace: Qwen/Qwen2.5-7B-Instruct
+- Load with HuggingFace: Qwen/Qwen2.5-Math-7B
+- You can call these models using: from utils.llm_inference import LLMInference
+- You can use the batch_generate() function to speed up the experiment
+- Computational budget: 1000 API calls per model
+
+Datasets:
+- GSM8K (grade school math word problems):
+```python
+from datasets import load_dataset
+ds = load_dataset("openai/gsm8k", "main")
+```
+- MMLU for general knowledge reasoning:
+```python
+from datasets import load_dataset
+ds = load_dataset("cais/mmlu", "abstract_algebra")
+```
+
+Experimental Design:
+- Compare different prompting strategies for eliciting extended reasoning:
+    - Standard prompting (no CoT instruction)
+    - Zero-shot CoT ("Let's think step by step")
+    - Explicit length encouragement ("Think very carefully and show all your reasoning steps in detail")
+    - Budget-forcing prompts that request a minimum number of reasoning steps
+- Measure how response length, reasoning depth, and answer accuracy change under each intervention.
+
+Evaluation Methods:
+- Measure response length (in tokens) under each condition.
+- Measure answer accuracy on the benchmark tasks.
+- Analyze the correlation between reasoning length and answer correctness.
+- Compare whether longer reasoning actually leads to better answers or just verbose repetition.
+- Use Exact Match accuracy for final answer evaluation.
+
+Please design and execute experiments to investigate this research question. Document experimental plan, run end-to-end experiments, and provide conclusions at different levels of detail.
+
+---
+
+## Experimental Design
+
+1) Long-CoT Activation Distribution (Fig. 1; Sec. 2.1)
+- Procedure:
+  - Build a contrastive CoT pool on a math-reasoning corpus:
+    - Generate CoTs for 2,000 math problems; filter to obtain 160 matched question pairs: positives show self-reflection, length > 1000 tokens, and are correct; negatives show no self-reflection, length < 1000 tokens, and are incorrect.
+    - Positive CoTs and negative CoTs must correspond to the same underlying question (paired).
+  - For each pair, construct two inputs by concatenating the question with either the positive or negative CoT (include final answer if present). Input format: 
+    - "[Question]\n\n[Reasoning/CoT]\n\n[Final answer if present]"
+  - For each target model under test (three models in the paper), run a forward pass over the entire sequence while recording MLP activations at every layer and channel (see Implementation Notes for exact hook point). Compute mean per-neuron activation across all token positions for each input.
+  - For each neuron, compute Δ = mean_activation_positive − mean_activation_negative, averaged over all 160 pairs. Select neurons with Δ > 4 as “long-CoT related activations.”
+  - Aggregate selected neuron counts by layer index.
+- What to record:
+  - Per-neuron Δ values.
+  - Indices of selected neurons (Δ > 4) per layer.
+  - Layer-wise counts and cumulative proportion of selected neurons.
+- Output mapping:
+  - Layer-wise distribution plot corresponds to Fig. 1.
+
+2) Ability Control via Constant Amplification and Wait-Token Insert (Figs. 2–3; Sec. 2.2)
+- Procedure:
+  - From Task 1, rank neurons by Δ and select top-200 neurons as the intervention set.
+  - Conditions (run each on the same held-out math test set):
+    - Constant Intervene only: multiply selected neuron activations by a constant factor in {1.2, 1.4, 1.6} during generation.
+    - Wait Token Insert only: whenever the last completed sentence contains a math equation, insert the token “Wait” at the start of the next sentence (see Implementation Notes for equation detection and sentence boundary).
+    - Constant Intervene + Wait Token Insert: apply both.
+  - Decoding is greedy (temperature 0.0) unless otherwise noted. Apply interventions at every generation step until end of sequence.
+- What to record:
+  - Raw generations.
+  - Accuracy per sample.
+  - Self-reflection flag per sample (presence of reflective phrases list).
+  - Length per sample (token count).
+  - For each amplification factor, dataset-level means of accuracy and self-reflection rate.
+- Output mapping:
+  - Accuracy vs amplification factor (Fig. 2).
+  - Self-reflection rate vs amplification factor (Fig. 3).
+
+3) Activation Dynamics Around Trigger Tokens (Figs. 4–6; Sec. 2.3)
+- Procedure:
+  - Using the same contrastive Δ from Task 1, identify the single top-1 neuron per model.
+  - For several randomly sampled math questions (≥5), generate a CoT with no intervention; record the value of the top-1 neuron for each generated token step.
+  - Also compute token-aligned windows around occurrences of target tokens: “Wait”, “1”, “the”. For each occurrence, align a window of positions t ∈ [−50, +100] relative to the target token position (target at t=0) and record the neuron value at each offset. Average across occurrences to obtain a mean trace per token.
+- What to record:
+  - Full time series of the top-1 neuron value over tokens for sample problems.
+  - Mean aligned traces for each target token.
+- Output mapping:
+  - Sparse activation traces (Figs. 5–6).
+  - Token-aligned activation curves (Fig. 4).
+
+4) Training-free Activation Control (EELo-CoT) and Ablations (Table 1; Secs. 3.1–3.3)
+- Procedure:
+  - Select key neurons via Task 1. For EELo-CoT, use n = 150 key neurons.
+  - Dynamic amplification rule (apply during generation): A′ = A · (1 + α f(t)), with f(t) = a − b · log(t + c). For the base 7B model in the paper: a = 0.17, b = 0.033, c = −0.997; α = 4.
+  - Forcing reflection rule (apply concurrently):
+    - Let k = 5. If the last completed sentence contains ≥ k digits, insert “Wait” at the start of the next sentence.
+    - Cool-down window: after any forced reflection, disable further forced reflections for the next 4 sentences.
+  - Evaluate the following interventions on each benchmark:
+    - Baseline (no intervention).
+    - Forcing Reflection only.
+    - Constant Intervention only (specify constant factor used: [uncertain], or sweep {1.2, 1.4, 1.6} and report the best single factor).
+    - Forcing & Constant.
+    - EELo-CoT (dynamic + forcing).
+  - Use greedy decoding (temperature 0.0) with a single sample per question.
+- What to record:
+  - Per-sample: raw outputs, extracted answers, reflection flag, token length.
+  - Per-condition: mean accuracy, mean length, reflection rate.
+- Output mapping:
+  - All rows in Table 1 per model × benchmark.
+
+5) Scaling to Smaller Bases (Table 2; Sec. 3.3)
+- Procedure:
+  - Repeat Task 4 (same procedures and settings) on two smaller models.
+- What to record:
+  - Accuracy and reflection rate for Baseline and EELo-CoT.
+- Output mapping:
+  - Table 2.
+
+6) Parameter-efficient Fine-tuning vs. LoRA vs. Full FT (Table 3; Sec. 4)
+- Procedure:
+  - Identify key neurons (n = 100) using a small set of contrastive pairs as in Task 1.
+  - Set up three training regimes on a small math/logical-reasoning dataset:
+    - Full-parameter fine-tuning.
+    - LoRA: rank = 256; scaling α = 512; apply to all eligible layers.
+    - EELo-CoT training (parameter-efficient):
+      - Add an Activation Amplification Module to the final MLP layer (trainable Wa ∈ R^{h×n} and scalar β).
+      - Add LoRA to earlier layers with reduced rank 64; freeze original model params otherwise.
+  - Training hyperparameters: [uncertain] (epochs, LR, batch size not specified).
+  - Evaluation protocol:
+    - Zero-shot CoT prompting.
+    - Math/Science sets: greedy decoding, single sample per question → pass@1.
+    - For AMC-style multiple-choice: sample 16 completions per question at temperature 0.7; compute unbiased pass@1 (see Evaluation Details).
+    - Record average response length (tokens) including CoT and final answer.
+  - Inference infra: use an efficient serving engine (e.g., vLLM).
+- What to record:
+  - Accuracy (pass@1), mean length for each method × benchmark.
+  - % trainable params for each method.
+- Output mapping:
+  - Table 3.
+
+7) Additional LLMs (Appendix Tables 4–5)
+- Procedure:
+  - Repeat Task 4 (EELo-CoT and ablations) on two additional models (smaller and larger).
+  - Note: Table 4 reports “Length” in words; the rest report tokens.
+- What to record:
+  - For each condition: Accuracy, Length, Reflection.
+- Output mapping:
+  - Table 4 and Table 5.
+
+8) Post-training Activation Visualizations (Appendix Figs. 8–10)
+- Procedure:
+  - For a trained instruct model, identify top-100 key neurons post-training.
+  - Compute token-aligned activation curves around “Wait” as in Task 3.
+  - Record sparse activation time series for a long CoT generation and compare to a long-CoT model.
+- What to record:
+  - Averaged “Wait”-aligned curve.
+  - Full activation trajectories for sample generations.
+- Output mapping:
+  - Figs. 8–10.
+
+## Evaluation Details
+
+- Per-neuron activation computation:
+  - Let h_l ∈ R^d be the per-channel hidden after the MLP nonlinearity and gating, before the final MLP projection (see Implementation Notes for the exact tensor). For an input sequence of T tokens, define mean activation per neuron i as μ_i = (1/T) ∑_{t=1}^T h_l[i, t].
+  - For a paired positive vs. negative CoT on the same question, compute Δ_i = μ_i^{pos} − μ_i^{neg}.
+  - Average Δ_i over all 160 question pairs; select neurons with Δ_i > 4.
+
+- Accuracy (pass@1):
+  - Single-answer open-form (numeric/short-form):
+    - Extract the final answer from the model output using the following precedence:
+      1) Last LaTeX \boxed{...} content.
+      2) The last occurrence of a pattern like “Final answer: <ans>”, “Answer: <ans>”, or “Therefore, the answer is <ans>”.
+      3) The last numeric token span possibly including signs, decimal point, fraction slash (/), percent, or scientific notation (regex examples below).
+    - Normalize:
+      - Lowercase; strip whitespace.
+      - Replace Unicode minus (−) with ASCII -.
+      - Remove thousands separators (commas).
+      - For simple fractions “a/b”, keep as-is.
+      - Remove trailing punctuation (.,;:).
+    - Exact Match against ground truth string after analogously normalizing the ground truth. If ground truth has multiple valid formats, allow any from the set [uncertain].
+    - Suggested numeric regex: r"[-+]?(\d+([.,]\d+)?|\d+/\d+)(e[-+]?\d+)?%?"
+  - Multiple-choice (AMC, GPQA-style):
+    - Extract the final choice letter by scanning from the end for patterns:
+      - “[A–E]”, “(A)–(E)”, or “option [A–E]”, possibly with punctuation; case-insensitive.
+      - If multiple letters present, take the last unambiguous A–E token.
+    - Normalize to uppercase A–E; EM against the correct option.
+  - AMC unbiased pass@1 with n=16 samples, temperature=0.7:
+    - For each question, sample n completions; let c be the count of correct; unbiased pass@1 estimator (Chen et al., 2021):
+      - p̂ = c / n (the MLE); since n is fixed and the metric is pass@1, report mean over questions of 1{any sample correct} if following pass@k; for pass@1 with multiple samples, report fraction of samples that are correct averaged over questions. If using the unbiased pass@k estimator for code eval: [uncertain] adapt formula to pass@1 classification (not specified). Clearly report the exact computation used alongside results.
+
+- Self-reflection rate:
+  - For each generated response, mark reflective if the lowercase text contains any of:
+    - “wait”, “let me double check”, “verify”
+  - Compute percentage of responses marked reflective.
+
+- Length:
+  - Default: token length = number of tokens by the model’s tokenizer (Hugging Face tokenizer for the specific model).
+  - For Appendix Table 4 only: report average word count (split on whitespace) to match the table.
+
+- Aggregation:
+  - Per-sample → per-condition: compute accuracy (mean EM), reflection rate (mean of binary flags), mean length (arithmetic mean).
+  - For Figs. 2–3: aggregate metrics for each amplification factor separately.
+  - For distribution plots (Fig. 1): count selected neurons per layer and divide by total selected to get proportions if needed.
+
+- Dynamic amplification variables:
+  - Distance t is the count of generated tokens since the most recent trigger token “Wait” (t=1 for the first token after the trigger). If no trigger has occurred in the current output, set t=[uncertain] (recommended: skip dynamic amplification until the first trigger).
+  - Compute f(t) = a − b·log(t + c). Guard against invalid or negative (t + c):
+    - Use t_eff = max(t, 1) and clamp (t_eff + c) to a small ε > 0, e.g., ε=1e-3.
+  - Effective scale s = 1 + α f(t). Clamp s to [s_min, s_max] to ensure stability (e.g., s_min=0.7, s_max=2.0) [uncertain exact bounds].
+  - Apply channel-wise: h[i] ← h[i] · s for i ∈ selected neuron indices.
+
+## Implementation Notes
+
+- Activation hook location (Qwen-style SwiGLU MLP):
+  - In HF Transformers, capture the gated intermediate before down_proj:
+    - hidden = silu(gate_proj(x)) ⊙ up_proj(x)
+  - Apply amplification multiplicatively to the selected channels of hidden, then pass to down_proj. This matches the paper’s A(x) = Act(xWg) notion.
+
+- Order of operations during generation:
+  1) Run standard forward for the next-token distribution.
+  2) If using interventions:
+     - Determine whether to insert “Wait” at the start of the next sentence (see triggers below). If inserting, prepend “Wait” plus a space to the next sentence buffer (or inject the token ID if implementing at token level).
+     - Compute amplification scale:
+       - Constant Intervene: fixed factor for selected neurons.
+       - EELo-CoT: compute s via A′ = A·(1 + α f(t)) with current t since last “Wait”.
+     - Apply amplification to selected neurons at the chosen layers (typically the last few; at minimum, apply to the last layer as in the paper).
+  3) Sample (greedy unless otherwise stated) and append generated token.
+  4) Update timers/counters (t since last “Wait”), sentence boundaries, and cool-down state.
+  5) Repeat until stopping criterion.
+
+- Sentence segmentation:
+  - Consider a sentence ended if the last generated token is one of [.?!] or a newline, or if EOS is reached. Accumulate characters since the last boundary.
+
+- Triggers for Wait insertion:
+  - Equation-based trigger (Sec. 2.2 experiments):
+    - If the last completed sentence matches any of:
+      - Contains “=” with at least one digit on either side: regex r"\d[^.\n]*=[^=\n]*\d"
+      - Contains LaTeX fragments: r"\\(frac|times|sqrt|cdot|pi|left|right|begin\{align\}|end\{align\})"
+    - Then insert “Wait” as the first token of the next sentence.
+  - Digit-count trigger (EELo-CoT main; Sec. 3.1):
+    - If the last completed sentence contains ≥ k=5 digit characters (regex r"\d"):
+      - If not in cool-down, insert “Wait” at the start of the next sentence; then activate cool-down for the next 4 sentences.
+  - Case-sensitivity: treat both “Wait” and “wait” as equivalent for detection of subsequent dynamics; injection should be capitalized “Wait”.
+
+- Stability safeguards:
+  - Avoid large amplification scales:
+    - For constant factors, stay within {1.2, 1.4, 1.6} for study in Sec. 2.2.
+    - For dynamic EELo-CoT, clamp s ∈ [0.7, 2.0] [uncertain exact bounds].
+  - Apply interventions only to the selected neuron indices and only in the final (or last few) layers, as most long-CoT-related activations concentrate there.
+  - If logits become unstable (NaNs/Infs), reduce α or disable amplification for the next token.
+
+- Selecting n and thresholds per study:
+  - Sec. 2.1 distribution: threshold Δ > 4; no fixed n.
+  - Sec. 2.2 ability control: top-200 neurons by Δ.
+  - Sec. 3 EELo-CoT: n = 150 neurons; α = 4; coefficients (a, b, c) as given for the 7B base; for other models, refit (a, b, c) using Wait-aligned traces from contrastive pairs.
+
+- Token-aligned traces:
+  - Detect occurrences of tokens exactly equal to:
+    - “Wait” (capital W), the digit “1” as a standalone token, and the word “the”.
+  - Build aligned windows with t ∈ [−50, +100]. If sequence bounds are exceeded, pad with zeros and mask from averaging.
+  - Report the mean and optionally a 95% CI via bootstrap over occurrences [optional].
+
+- Self-reflection detection:
+  - Lowercase the full output and search for any of:
+    - "wait", "let me double check", "verify"
+  - Count once per response; overlapping matches do not increase the count.
+
+- Output parsing:
+  - Multiple-choice: robustly parse the final choice letter from the tail; tolerate enclosing parentheses/brackets and trailing punctuation.
+  - Numeric answers: prefer \boxed{...}; otherwise parse the last clear numeric. Strip spaces and normalize signs. For fractions, treat “a/b” literally. If both percent and decimal variants exist in ground truth, normalize by removing “%” after dividing by 100 [if applicable, else keep as string match; [uncertain] which normalization is allowed by the benchmark].
+
+- Re-fitting the analytic function:
+  - To fit (a, b, c) for a new model:
+    - Gather Wait-aligned traces for the top-1 (or top-k) neuron(s) from contrastive pairs.
+    - Compute the mean trace for t ∈ [1, T_win], e.g., T_win=100.
+    - Fit f(t) = a − b·log(t + c) by minimizing MSE over t with constraints c > −1 to keep t+c > 0 at t=1. Use nonlinear least squares; initialize with (a, b, c) = (0.2, 0.03, −0.9).
+    - Validate by overlaying the fitted curve on the empirical mean trace.
+
+- Reproducibility:
+  - Fix random seeds for subsampling and generation ordering (e.g., 2025).
+  - Shuffle question order but keep it fixed across conditions.
+  - Use identical decoding settings across conditions within each study.
+
+- Missing specifications:
+  - Training hyperparameters for Sec. 4 (optimizer, LR, epochs, batch size), the precise set of layers to which LoRA is applied, and exact clamp bounds for dynamic scaling are [uncertain]. Clearly log chosen values if diverging from the paper.
+
+- Compute budgeting:
+  - Cache activations from contrastive passes; reuse across studies.
+  - Batch activation extraction where possible; ensure hooks only compute and store selected tensors to reduce memory.

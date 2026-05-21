@@ -1,0 +1,283 @@
+You are a research agent. Conduct research and experiment about the question: "When and why do LLMs deviate from the narrow fractal parameter range characteristic of natural language, as visualized by Holder and Hurst exponents?"
+
+You have access to the following resources:
+Models:
+- Openai's gpt-3.5-turbo
+- Gemini's gemini-1.0-pro
+- Load with HuggingFace: mistralai/Mistral-7B-Instruct-v0.3
+- Load with HuggingFace: google/gemma-2b
+
+
+- You can call these models using: from utils.llm_inference import LLMInference
+- API key is provided with the LLMInference initialization function
+
+Datasets:
+- A very small part of GAGLE, comprises of prefix used to generate LLM texts and the ground-truth original human texts, you can load it in /data/gagle
+
+Evaluation Methods:
+- Generate LLM-texts with the models based on the prefix
+- Each human and LLM-generated text is transformed into a bits-per-token signal; the Hölder exponent (S) and Hurst exponent (H) are estimated via wavelet and detrended-fluctuation analyses.
+- Mean and standard deviation of S and H per condition
+- Correlation analyses between fractal parameters and model/dataset variables
+- Mutual information between S/H and experimental factors (temperature, prompt type)
+- Test on different control variables like model temperature, prompting methods, etc.
+
+Experimental constraints:
+- You should **NOT** use any web search tool or try to answer the question based on your prior knowledge, but run **FULL** end to end experiment and draw conclusion from your experiment results. 
+
+Please design and execute experiments to investigate this research question. Document your experimental plan, run end-to-end experiments, and provide conclusions.
+
+---
+
+## Experimental Design
+
+1. Q1: 1st-order statistics (log-PPL) under simple continuation
+   - Procedure:
+     - Use all available instances in /data/gagle. For each instance, take the provided short prefix and ground-truth human article.
+     - For each decoding temperature in {0.0, 0.5, 1.0}, generate a continuation using simple continuation (no additional prompt text beyond the prefix).
+     - Scoring:
+       - Score both human and generated documents with each available scoring model separately (teacher-forcing over the whole document; see Evaluation Details).
+     - Length control and filtering (applies to both human and generated):
+       - Tokenize with the scoring model’s tokenizer.
+       - Drop the first 64 tokens of the bits-per-token signal.
+       - If remaining length < 400, discard the pair (and exclude both the generated and its paired human document to keep comparability).
+       - Else, clip to exactly 400 tokens.
+   - What to record:
+     - Per-token negative log-probabilities (nats or bits; see Evaluation Details) and final bits-per-token average per document.
+     - Aggregated corpus-level Bits Log Ratio: log(mean bits-per-token of LLM docs) − log(mean bits-per-token of human docs) for each (temperature × scoring model) condition.
+     - Bootstrap CIs (10 resamples at the document level).
+   - Correspondence: Figure 4; Appendix A (RAID replication, omitted here).
+
+2. Q2: 2nd-order statistics (fractal parameters) for pretrained models at β = 1
+   - Procedure:
+     - Restrict to simple continuation and temperature = 1.0.
+     - For each scoring model, compute S and H for human vs generated corpora (same filtering and length control as above).
+     - Compute corpus-level log-ratios: log(Ŝ/S) and log(Ĥ/H).
+   - What to record:
+     - Per-document S and H, corpus means and 95% CIs via bootstrapping.
+     - Per-scoring-model corpus-level log-ratios.
+   - Correspondence: Figure 3.
+
+3. Q3: Effect of instruction tuning under simple continuation
+   - Procedure:
+     - Use simple continuation for both pretrained and instruction-tuned checkpoints (no prompt context).
+     - Evaluate all temperatures {0.0, 0.5, 1.0}.
+     - For each scoring model, compute distributions of log-ratios for S and H relative to human language at the corpus level.
+   - What to record:
+     - Density estimates or histograms of log-ratio(S) and log-ratio(H) across all generation settings.
+   - Correspondence: Figure 6; Appendix A/Figure 12 (RAID replication, omitted here).
+
+4. Q4: Prompting methods and information density (instruction-tuned models)
+   - Procedure:
+     - Prompting conditions (least to most informative):
+       1) continue (cont)
+       2) chain-of-thought outline (cot)
+       3) short keywords (kw)
+       4) keywords (kw+)
+       5) summary (su)
+       6) summary + keywords (su+)
+       7) excerpt (exc)
+     - For each gold article:
+       - Generate contextual info required by the condition from the gold article (keywords, summary, ordered excerpts) using the dedicated prompts below (see Implementation Notes).
+       - Construct the generation prompt using the exact templates below.
+     - Generate articles at temperatures {0.0, 0.5, 1.0}.
+     - Score with each scoring model; compute S and H (same filtering/length control).
+   - What to record:
+     - For each prompting method and temperature, corpus-level log-ratios log(Ŝ/S), log(Ĥ/H), with 95% CIs.
+     - Per-domain breakdowns (optional) for sensitivity analyses.
+   - Correspondence: Figure 7; Appendix F (full per-domain figures).
+
+5. Q5: Sensitivity of fractal parameters to prompting (instruction-tuned models)
+   - Procedure:
+     - For each instruction-tuned generating model:
+       - Compute per-prompt (over all other variables averaged: temperatures, scoring models, datasets) mean S and mean H.
+       - Then compute std across prompting methods for S and H.
+   - What to record:
+     - A bar chart of std(S) and std(H) per model; numerical values with CIs via bootstrapping prompts if sample permits.
+   - Correspondence: Figure 8.
+
+6. Q6: Relation between fractal parameters, log-PPL, and quality
+   - Procedure:
+     - For each generated document (all prompting methods and temperatures), request an automatic quality rating (1–5) using the exact quality-rating prompt (see Implementation Notes).
+     - Aggregate per (generating model × prompting × temperature × dataset) corpus: mean quality, mean log-PPL (bits-per-token proxy), mean S, mean H.
+     - Compute Pearson correlations (r, p-value) of mean quality vs each metric across corpora.
+   - What to record:
+     - Scatter plots: Quality vs log-PPL, vs S, vs H, with correlation statistics.
+     - Examples of system quality ratings may be logged (optional).
+   - Correspondence: Figure 9; Appendix A/Figure 13 (RAID replication, omitted).
+
+7. Q7: Range overlap and mixture analysis of S and H
+   - Procedure:
+     - For each corpus (combination of generating model × decoding temperature × prompting method × scoring model × dataset), compute S and H.
+     - Plot distributions of S and H across corpora for pure human vs pure LLM corpora.
+     - Mixtures: For each dataset and temperature, randomly sample documents to create mixed corpora containing {0%, 25%, 50%, 75%, 100%} LLM-generated texts (balance total doc count across mixtures). Compute S and H for each mixed corpus.
+   - What to record:
+     - Density/histograms over S and H for each mixture proportion; seed-fixed sampling to ensure reproducibility.
+   - Correspondence: Figure 10; Appendix H.
+
+8. Q8: Self-scoring vs cross-scoring invariance
+   - Procedure:
+     - Build a tabular dataset with features: fractal parameters (S, H), log-PPL, temperature, prompting method, dataset, length statistics, and target label = generating model (or scoring model).
+     - Train a random forest classifier (default scikit-learn hyperparameters) to predict:
+       - (a) Scoring model with and without including generating model as a feature.
+       - (b) Generating model with and without including scoring model as a feature.
+     - Compare accuracies to test J(X; Y) ≈ U(X|Z) − U(X|Z, Y) changes (see Evaluation Details).
+   - What to record:
+     - Accuracies (mean over 5 random splits; report std).
+     - Interpretation: change (or lack thereof) in accuracy when adding the other model as a predictor.
+   - Correspondence: Section 4/Q8.
+
+9. Q9: Domain-level comparison
+   - Procedure:
+     - For each domain, average across all settings (temperatures, models, prompts, scoring models) to compute domain-level log-ratios for S, H, and log-PPL with 95% CIs.
+   - What to record:
+     - A table of domain-level means ± std (or bootstrap CI) for S log-ratio, H log-ratio, and log-PPL difference.
+   - Correspondence: Table 3.
+
+10. Fractal fit diagnostics
+    - Procedure:
+      - For representative corpora (e.g., one human and one LLM corpus per domain), compute and plot:
+        - pε(τ) vs τ in log-log space for S.
+        - R(n)/S(n) vs n in log-log space for H.
+      - Report linear fit slopes, intercepts, and R².
+    - What to record:
+      - Plots and fit statistics; confirm power-law quality with the specified scales.
+    - Correspondence: Figure 2.
+
+## Evaluation Details
+
+- Bits-per-token and “log-PPL”:
+  - For each tokenized sequence y1..yN scored by a model with conditional probabilities p(yi | y< i), compute:
+    - Cross-entropy in nats: H_nats = −(1/N) Σ_i log p(yi | y< i).
+    - Bits-per-token (B): H_bits = H_nats / ln 2.
+  - We use H_bits as the canonical “log-PPL” proxy throughout (higher = less surprising).
+  - Bits Log Ratio (per condition): log(mean(H_bits_LLM)) − log(mean(H_bits_human)).
+
+- Pre-processing for scoring (applies identically to human and generated):
+  - Tokenize with the scoring model’s tokenizer.
+  - Compute per-token probabilities via teacher forcing (do not include the prompt instructions text when scoring; only score the actual article body—see Implementation Notes on extraction).
+  - Drop the first 64 tokens of the bits-per-token sequence, then:
+    - If remaining < 400 tokens, discard the paired documents; else clip to exactly 400 tokens.
+  - Store the final 400-token subsequence as the evaluation span.
+
+- Hӧlder exponent S (self-similarity):
+  - Let x_t be the bits-per-token signal after filtering/clipping (t = 1..T, with T = 400).
+  - Define the integral process X_t = Σ_{i=1}^t x_i.
+  - For each τ in {8, 16, 32, 48, 64, 96, 128, 160, 192, 256, 320}, compute increments Δ_{t,τ} = X_{t+τ} − X_t for all t with t+τ ≤ T.
+  - Fix ε = 1e−2 and estimate p_ε(τ) = (1/M_τ) Σ_t 1{|Δ_{t,τ}| ≤ ε}, where M_τ is the number of valid increments for τ.
+  - Fit a line in log-log space: log p_ε(τ) ≈ −S log τ + c, using ordinary least squares (OLS).
+  - Report S and the fit R².
+
+- Hurst exponent H (long-range dependence):
+  - Using the same x_t:
+    - For each n in the same scale set {8, 16, 32, 48, 64, 96, 128, 160, 192, 256, 320}, compute:
+      - y_t = x_t − (1/t) Σ_{k=1}^t x_k for t=1..n; Y_t = Σ_{k=1}^t y_k for t=1..n.
+      - R(n) = max_{t≤n} Y_t − min_{t≤n} Y_t.
+      - S(n) = std({x_k}_{k=1..n}).
+      - Z(n) = R(n)/S(n).
+    - Fit log Z(n) ≈ H log n + b via OLS.
+  - Report H and the fit R².
+
+- Aggregation and confidence intervals:
+  - Per-document: compute S, H, H_bits.
+  - Per-corpus (condition): mean of S, H, H_bits across documents.
+  - Bootstrapping: 10 resamples with replacement at the document level to obtain 95% CIs (percentile interval).
+  - Log-ratios: compute ratios on corpus means (e.g., log(Ŝ/S)).
+
+- Quality scoring:
+  - Prompt:
+    - First, explain briefly what is good and what is bad about the quality of the following document. Then, rate it on a scale from ’1’ to ’5’, where ’1’ is poorest and ’5’ is best. The last character in your response must be a single digit that corresponds to your rating. The document is:
+    - <article>
+  - Parsing:
+    - Take the last non-whitespace character; assert it is one of {1,2,3,4,5}. If not, fallback: regex the last digit in [1-5] in the final 10 chars; if still missing, mark as [uncertain] and exclude from quality correlation.
+  - Correlations:
+    - Compute Pearson r and two-sided p-values between mean quality and each metric (H_bits, S, H) across corpora.
+
+- Mutual information with experimental factors:
+  - Discretize S and H into bins of width 0.1 (closed on the left, open on the right).
+  - For each factor F in {prompting method, dataset/domain, temperature, generating model, scoring model}, compute:
+    - I(S; F) / H(S) and I(H; F) / H(H), where I is Shannon mutual information and H is Shannon entropy of the discretized S or H.
+  - Implementation:
+    - Use sklearn.metrics.mutual_info_score for I(X; Y) and scipy.stats.entropy for H(X).
+
+- Self-scoring vs cross-scoring (Q8):
+  - Features: {S, H, H_bits, temperature, prompting method (one-hot), dataset (one-hot)}.
+  - Classifier: RandomForestClassifier (sklearn, default hyperparameters, random_state=0).
+  - Evaluation:
+    - 5× random 80/20 splits; report mean accuracy ± std.
+    - Compare accuracy of predicting scoring model with and without generating model as a feature, and vice versa.
+    - Reduction in uncertainty: J(X; Y) ≈ accuracy_gain when adding the other model as a feature under identical splits.
+
+- Mixture analysis (Q7/H):
+  - For each domain and temperature, and for each mixture proportion m ∈ {0, 25, 50, 75, 100} (% LLM):
+    - Sample N documents (N = min available across buckets) with replacement if needed.
+    - Construct a mixed corpus by combining m% generated + (100−m)% human documents.
+    - Compute S and H; repeat 5 times per m with different seeds to obtain variability bands.
+
+## Implementation Notes
+
+- Prompt templates (exact; replace placeholders):
+  - cont (simple continuation): no extra prompt; just pass the prefix/context.
+  - cot (outline then generate):
+    - Extend the following text. First write an outline. Then insert **Extended Text:** After that write the text using a minimum of 15 paragraphs containing a minimum of 1000 words, in plain text only without titles or headings. The text you need to extend is: <prefix>
+    - Output parsing: if the model includes an outline, extract text after the literal “Extended Text:” marker; otherwise, use the entire response.
+  - kw (short keywords) and kw+ (many keywords):
+    - Using these keywords: <keywords>, write an article, in a minimum of 15 paragraphs containing a minimum of 1000 words, in plain text only without titles or headings.
+  - su (summary):
+    - Write about the following in a minimum of 15 paragraphs containing a minimum of 1000 words, in plain text only without titles or headings: <summary>.
+  - su+ (summary + keywords):
+    - Write about the following in a minimum of 15 paragraphs containing a minimum of 1000 words, in plain text only without titles or headings: <summary>. Using these keywords: <keywords>.
+  - exc (ordered excerpts):
+    - Write about the following in a minimum of 15 paragraphs containing a minimum of 1000 words, in plain text only without titles or headings: <ordered excerpts>.
+
+- Generating contextual information from the gold article:
+  - Keywords prompt:
+    - Generate keywords for the following text, but only respond with the keywords in plain text separated by commas. The text is: <article>
+  - Summary prompt:
+    - Summarize the following text in few sentences, but only respond with the text summary in plain text. The text is: <article>
+  - Excerpts:
+    - If not provided, construct ordered excerpts by splitting the gold article into [uncertain] long segments (e.g., 5–8 contiguous chunks preserving order), each ~[uncertain] 80–120 tokens; ensure coverage of the full article. Use these as <ordered excerpts> (each chunk on a new line, preserving order).
+
+- Output extraction for scoring:
+  - Exclude any instruction scaﬀolding (e.g., outlines, headings) when clearly demarcated (e.g., take content after “Extended Text:”).
+  - Otherwise, score the entire generated body as-is.
+  - Normalize whitespace; do not detokenize/re-tokenize across models—always tokenize with the scoring model’s tokenizer.
+
+- Degenerate outputs and repetition:
+  - At temperature = 0.0, degenerate loops are more frequent. Allow such outputs but tag documents with high repetition if the most frequent 10-gram appears ≥ [uncertain] 5 times; keep them (they meaningfully affect H), but log this flag for analysis.
+
+- Consistency requirements:
+  - Use identical τ scales and ε across all conditions (τ ∈ {8,16,32,48,64,96,128,160,192,256,320}, ε = 1e−2).
+  - Use the same filtering (drop 64 tokens; min 400; clip to 400) across human and generated documents.
+  - Compute S and H for human and LLM corpora using the same scoring model within a comparison.
+  - When a generated document is filtered out due to length, also remove its paired human document from that comparison.
+
+- Order of operations:
+  - Run simple continuation experiments (Q1–Q3) first to establish baselines.
+  - Then run prompting experiments (Q4–Q5).
+  - Finally, run quality correlations (Q6), range/mix analyses (Q7), and self- vs cross-scoring (Q8).
+
+- Recording and reproducibility:
+  - Log all random seeds (generation, bootstrapping, mixtures).
+  - Persist raw model responses, prompts, temperatures, and tokenizer IDs.
+  - Persist per-token log-probs and the post-filter 400-token window indices.
+
+- Edge cases:
+  - If quality rater fails to return a trailing digit, re-query once; otherwise mark as [uncertain].
+  - If contextual-info generator returns empty output, retry up to 2 times; if still empty, skip that prompting condition for the instance.
+
+- Figure/Table mapping summary:
+  - Q1 → Figure 4
+  - Q2 → Figure 3
+  - Q3 → Figure 6
+  - Q4 → Figure 7 (Appendix F for per-domain)
+  - Q5 → Figure 8
+  - Q6 → Figure 9
+  - Q7 → Figure 10 (Appendix H for mixes)
+  - Q8 → Section 4/Q8 text
+  - Q9 → Table 3
+  - Fit diagnostics → Figure 2
+
+- Known caveats from the paper:
+  - Short documents yield higher-variance estimates of S and H; constraints (τ ≤ 320, ε = 1e−2) are chosen to stabilize fits on ~400-token spans.
+  - Fractal parameters describe processes, not single realizations—prefer corpus-level conclusions over per-document assertions.

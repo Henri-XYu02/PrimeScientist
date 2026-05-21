@@ -1,0 +1,230 @@
+You are a research agent. Conduct research and experiment about the question: "Does the order of premises affect the reasoning performance of LLMs, even when the logical content remains the same?"
+
+You have access to the following resources:
+
+Models:
+- gpt-3.5-turbo and gpt-4 via the provided inference utilities
+- Load with HuggingFace: meta-llama/Llama-2-13b-chat-hf
+- You can call these models using: from utils.llm_inference import LLMInference
+- API key is provided with the LLMInference initialization function
+- You can use the batch_generate() function to speed up the experiment
+- Computational budget: 1000 API calls per model
+
+Datasets:
+- You should programmatically generate logical reasoning problems (syllogisms and multi-premise deductions) where:
+    - Each problem has 2-5 premises and a conclusion to evaluate.
+    - For each problem, create all permutations (or a representative sample) of premise orderings.
+    - Include both valid and invalid conclusions.
+- Additionally, you may use the FOLIO dataset for natural-language logical reasoning:
+```python
+from datasets import load_dataset
+ds = load_dataset("yale-nlp/FOLIO")
+```
+
+Evaluation Methods:
+- Measure accuracy across different premise orderings for the same logical problem.
+- Compute variance in accuracy across orderings to quantify sensitivity.
+- Test whether placing the most relevant premise first vs. last produces systematic differences.
+
+Please design and execute experiments to investigate this research question. Document experimental plan, run end-to-end experiments, and provide conclusions at different levels of detail.
+
+---
+
+## Experimental Design
+
+1. Logical Reasoning Benchmark (premise-order sensitivity)
+   - Procedure
+     - Problem generator:
+       - Construct propositional logic problems with definite clauses.
+       - Each base problem contains:
+         - Facts: a small set of initial true atoms, e.g., F = {a1, a2, ...}, presented as “Fact i: Xi is true.”
+         - Rules: m rules required for the proof, with m ∈ {4,5,6,7,8,9,10,11,12}. Rule arity ∈ {1,2,3} antecedents; format: “Rule j: If Xa [and Xb [and Xc]], then Y.”
+         - Goal: a single atom G with a proof path consisting of exactly m rule applications via forward chaining from initial facts. Ensure a unique minimal proof path by not introducing alternate shorter derivations; allow benign branching but enforce a designated gold proof order (forward chain).
+       - Distractors: for each base problem, create three variants with k ∈ {0,5,10} distracting rules that never participate in any valid derivation to G and are not derivable themselves from F or other distractors. Interleave distractors with relevant rules in the final prompt (see Implementation Notes).
+     - Premise-order variants:
+       - For each (base problem, distractor count k), create 5 premise-orderings of the relevant rules using Kendall’s tau correlation τ with respect to the gold forward proof order: τ ∈ {1.0, 0.5, 0.0, -0.5, -1.0}.
+       - Keep the relative order of distractors fixed and interleaved consistently across τ settings. The only change across τ is the permutation of the relevant rules.
+       - Create “shuffled” aggregation as the set {τ=0.5, 0.0, -0.5}.
+     - Prompting:
+       - Zero-shot. Temperature = 0 (greedy).
+       - Input format:
+         - Header with Facts, Rules, and Goal, each item numbered.
+         - An instruction to produce a derivation citing which premise(s) is/are used at each step.
+       - Exact template:
+         - [See Implementation Notes: Prompt template LR-0]
+     - Sample size:
+       - Full-benchmark target (paper scale): 200 base problems for each m ∈ {4..12} → 1,800 base problems. With 3 distractor settings and 5 τ per base → 27,000 model inputs.
+       - Budgeted subset (use if API/compute-limited): stratified sample of S base problems per m (recommended S=5) → 45 base problems; with 15 variants each → 675 inputs per model. Use fixed random seed 20240208 for reproducibility.
+     - What to record
+       - Raw model outputs.
+       - Parsed proof steps (premises cited, derived facts).
+       - Proof-checker verdict (valid/invalid).
+       - Error type for invalid outputs in the 12-rule, no-distractor slice (to mirror Table 1 categories).
+       - For each base problem: per-τ accuracy; for “shuffled”: mean across τ ∈ {0.5,0,-0.5}.
+     - Paper correspondence
+       - Figures 3 and 4 (accuracy vs. number of rules, with/without distractors; “shuffled” aggregation).
+       - Figures 5 and 6 (accuracy vs. τ, with/without distractors).
+       - Table 1 (error breakdown for 12-rule problems, no distractors).
+
+2. Logical Reasoning: Position ablation (control for lost-in-the-middle)
+   - Procedure
+     - Use the same generation as Task 1 with k=10 distractors.
+     - Construct inputs in which relevant rules are placed as a block at: beginning, middle, or end of the combined Rules list (keep their internal order as forward/backward/shuffled accordingly).
+     - m ∈ {8,12}; order ∈ {forward, backward, shuffled}; position ∈ {beginning, middle, end}.
+     - Temperature = 0, zero-shot. Same prompt as Task 1.
+     - Sample size (budgeted): choose 10 base problems per (m, order) cell → 90 inputs per position setting; total 270 inputs.
+     - What to record: per-cell accuracy; compare across positions holding m and order fixed.
+     - Paper correspondence: Appendix D, Table 5.
+
+3. R-GSM (math reasoning under sentence reordering)
+   - Procedure
+     - Dataset:
+       - Preferred: use the released R-GSM pairs (original vs. reordered) [location: [uncertain]].
+       - If unavailable, reconstruct a smaller controlled set:
+         - Start from GSM8K test split. Filter to problems whose statement has ≥5 sentences (split on sentence terminators; keep the final interrogative sentence as-is).
+         - For each selected problem:
+           - Generate alternate orderings by permuting non-final sentences; keep the last sentence (the question) unchanged.
+           - Allow minor grammatical edits (e.g., pronoun/tense agreement) to preserve fluency without altering quantities/relations.
+           - Retain a reordered version only if the gold final answer from GSM8K remains the same. Verify by human-in-the-loop check; log edits.
+         - Target size: 220 pairs to mirror the paper, or a budgeted subset of at least 100 pairs if resource-constrained.
+     - Prompting:
+       - Zero-shot. Temperature = 0.
+       - Inputs contain only the problem description (no extra instruction or answer-format constraint).
+     - What to record
+       - Raw model outputs.
+       - Extracted final numeric answer.
+       - Per-problem correctness on original and reordered versions.
+       - Subset accuracy restricted to problems solved in the original version (init-100% subset).
+       - Breakdown by: number of reasoning steps in reference solution (see Evaluation Details) and number of sentences in the problem.
+     - Paper correspondence
+       - Table 2a (overall accuracy on original vs. reordered).
+       - Table 2b (accuracy on subset where original is correct).
+       - Figures 7 and 8 (breakdowns by steps and by sentences).
+
+
+## Evaluation Details
+
+- Logical Reasoning: proof validity and accuracy
+  - Normalization and parsing
+    - Strip whitespace, normalize quotes, lowercase only for control phrases (“cannot be proved” etc.) but keep case-sensitive symbols for facts/rules.
+    - Extract steps as lines starting with “Step” or numbered list markers. Fallback: any line containing brackets “[...]” with premise IDs.
+    - Premise references: parse integers within square brackets as IDs. Allow multiple IDs per step.
+    - Derived fact extraction: the trailing atom on each step after “then”/“therefore”/“derive”/“we get” is treated as the asserted atom for the step; also accept “X is true”.
+  - Proof checker (deterministic)
+    - Let R_rel be the set of relevant rules as (antecedent set → consequent). Let F0 be initial facts.
+    - Maintain a derived set D initialized to F0.
+    - For each parsed step t in order:
+      - Validate all cited premise IDs exist and refer to either a Fact or a Rule supplied in the prompt. If any cited ID does not exist → rule hallucination.
+      - If the step cites rules, verify that for each cited rule r = (A → B), A ⊆ D at this step. If not, and the derived fact is not already in D via any valid rule application, mark as fact hallucination.
+      - If a derived fact Ft is produced, check that there exists at least one rule r in R_rel with antecedents A ⊆ D that entails Ft at this step. If none, mark as fact hallucination.
+      - If the step cites only facts and claims a new fact beyond D, mark as fact hallucination.
+      - Add valid Ft to D.
+    - Success condition: after the final step, Goal G ∈ D. Additionally, no step triggered hallucination; otherwise the sample is incorrect.
+    - If the model states impossibility (detect phrases such as “cannot be proved,” “not provable,” “insufficient information,” “cannot derive,” or explicitly claims the goal is false) and G ∉ D at the end → wrong refutation.
+    - If the model never reaches G ∈ D and did not match wrong-refutation phrases, classify as fact hallucination if any invalid fact was introduced; else classify as rule hallucination if any invalid rule citation occurred; else classify as wrong refutation if it terminated claiming failure; else classify as [uncertain]/other (do not include in Table 1; only needed if performing extended error analysis).
+  - Accuracy
+    - Per-variant accuracy: 1 if proof checker accepts; 0 otherwise.
+    - For each base problem and distractor level, compute accuracy per τ ∈ {1.0, 0.5, 0.0, -0.5, -1.0}.
+    - Shuffled accuracy = mean over τ ∈ {0.5, 0.0, -0.5}.
+    - Aggregate by:
+      - Per-m (number of relevant rules) averages.
+      - With vs. without distractors (k ∈ {0,5,10}).
+      - Per-τ curves (Figures 5 and 6).
+    - Error analysis (Table 1): restrict to m=12, k=0; report proportions over outcomes in {Correct, Wrong refutation, Rule hallucination, Fact hallucination}.
+
+- Kendall’s tau computation and order generation
+  - Given forward order π (length m) and a candidate order σ, compute Kendall’s tau correlation:
+    - τ = (C − D) / (m·(m−1)/2), where C is the number of concordant pairs, D discordant pairs.
+    - Use exact computation with no ties.
+  - For target τ* ∈ {0.5, 0.0, −0.5}:
+    - Sample random permutations σ until |τ(σ, π) − τ*| ≤ 0.05; cap at 10,000 trials. If not found, relax to 0.10. Record actual τ achieved for reporting.
+  - Backward order uses σ = reverse(π) which yields τ = −1.0 by construction. Forward uses σ = π (τ=1.0).
+
+- R-GSM scoring
+  - Output normalization
+    - Extract the final numeric answer using regex capturing the last occurrence of:
+      - Integers: [-+]?[0-9][0-9,]* (remove commas).
+      - Decimals: [-+]?[0-9]*\.[0-9]+
+      - Fractions in plain text (e.g., “3/4”): treat as float numerator/denominator.
+    - Prefer the last numeric token in the output; if multiple, use the final one.
+  - Matching
+    - Convert ground-truth answer string to numeric form (strip formatting).
+    - Correct if:
+      - Exact integer equality; or
+      - Absolute difference ≤ 1e-6 for decimals; or
+      - For percentage-form in output (e.g., “25%”) when ground-truth is 0.25, treat as correct if within 1e-6 after scaling by 100 or 1, whichever matches best.
+  - Aggregation
+    - Overall accuracy on all originals and on all reordereds (Table 2a).
+    - Subset accuracy (Table 2b): restrict to problems solved correctly in original; recompute accuracy on the paired reordered only.
+    - Breakdowns:
+      - Reasoning steps: approximate from GSM8K reference solution text by counting arithmetic operators. Define step count as the number of occurrences of any of {+, -, *, /} tokens or their word forms {"plus","minus","times","multiplied","divided","difference","sum","product","quotient"}; collapse repeated operators in the same sentence to 1 step; bin as in Table 4a categories {2,3,4,5,6,7,8}.
+      - Sentences: count in the problem statement; bin as {5,6,7,8}.
+
+- Decoding parameters (all tasks)
+  - Temperature = 0, top_p = 1.0, n = 1, stop = default [uncertain], max_tokens = [uncertain].
+  - No system or few-shot exemplars; pure zero-shot (except the explicit derivation instruction for logical reasoning).
+
+
+## Implementation Notes
+
+- Prompt template LR-0 (logical reasoning; zero-shot, derivation required)
+  - Use exactly:
+    - Facts:
+      - “Facts:” then enumerate as “Fact 1: a1 is true.”, …
+    - Rules:
+      - “Rules:” enumerate as “Rule 1: If a1 and a2, then b1.” (use “and” for 2–3 antecedents; for arity 1 omit “and”).
+    - Goal:
+      - “Goal: g is true.”
+    - Instruction:
+      - “Provide a step-by-step derivation to prove the Goal using only the numbered Facts and Rules. At each step, cite the premise indices in square brackets (e.g., [Rule 3], [Fact 2]) and state the new fact you derive. Do not invent any new facts or rules. End with a final line: ‘Therefore, g is true.’”
+  - Output parsing expects lines starting with “Step 1: …”, but the checker should accept any numbered list; rely on square-bracketed citations.
+
+- Rule/fact naming
+  - Use short lowercase atom names (e.g., a1, b2, c3) to minimize token length and reduce ambiguity in string matching. Derived facts must exactly match these atom names (with “is true” suffix).
+
+- Interleaving distractors
+  - After obtaining the relevant-rule order σ for a given τ, create the final Rules section by interleaving distractors at approximately uniform intervals:
+    - If there are k distractors and m relevant rules, place a distractor after every ⌈m/(k+1)⌉ relevant rules (round-robin). Keep distractor order fixed across τ for that base problem.
+
+- Graph generation for base problems
+  - Construct a DAG of implications that yields a linearizable forward proof order of length m:
+    - Sample arities uniformly from {1,2,3} with at least 1 rule of arity ≥2 if m ≥ 6 [recommended].
+    - Ensure acyclicity; use topological construction:
+      - Initialize D = F0 with 2–4 seed facts.
+      - Iteratively add a new rule whose antecedents are sampled from D (size equals chosen arity) and whose consequent is a new atom not in D; append the consequent to D.
+      - The final consequent is the Goal.
+  - Distractors must not be triggered by any subset of D; ensure their antecedents contain at least one atom never derivable in the graph.
+
+- τ category feasibility
+  - For small m, τ values are discrete; exact τ=±0.5 may be impossible. Use the acceptance bands specified in Evaluation Details; always log the realized τ and include it in analysis plots/tables.
+
+- Error categorization precedence (Table 1 replication)
+  - If both hallucination and refutation cues appear, assign wrong refutation only if the model explicitly claims impossibility; else assign hallucination type based on the first detected violation in step order (rule → fact).
+  - For Table 1, run the classifier strictly on m=12, k=0, all τ; do not mix with other settings.
+
+- R-GSM reconstruction caveats
+  - Keep the final question sentence unchanged.
+  - Avoid changing causal/temporal logic; if a permutation alters the timeline or prerequisites such that the gold answer is no longer valid, discard and try another permutation.
+  - Minor edits allowed: pronouns, articles, tense to maintain grammaticality; never change numerals or relational comparators.
+  - Human verification is required to confirm the gold answer is preserved. Record a justification string and the exact permutation indices for audit.
+
+- Order of operations
+  - Logical reasoning:
+    1) Run k=0 across τ to get Figures 3 and 5 (or their tables).
+    2) Then k=5 and k=10 for Figures 4 and 6.
+    3) Finally, compute the m=12, k=0 error analysis (Table 1).
+  - Position ablation (Appendix D) after the above.
+  - R-GSM:
+    1) Evaluate originals.
+    2) Evaluate reordereds.
+    3) Compute overall, then the init-100% subset, then breakdowns.
+
+- Reproducibility
+  - Fix random seeds: 20240208 for graph generation and distractor sampling; 20240209 for τ-permutation sampling.
+  - Persist:
+    - The base graph (facts, rules), gold forward order, all τ permutations with realized τ values, distractor sets and their interleaving positions.
+    - All prompts and raw outputs.
+    - Proof-checker logs per step (success/failure reason).
+
+- API efficiency
+  - Use batching for each (m, k, τ) cell to minimize overhead. Cap total calls per model to fit the budgeted subset counts.

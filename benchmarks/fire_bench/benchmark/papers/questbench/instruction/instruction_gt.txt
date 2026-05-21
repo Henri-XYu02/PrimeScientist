@@ -1,0 +1,194 @@
+You are a research agent. Conduct research and experiments to answer the question: “How well can large language models identify the single minimal clarification question needed to solve underspecified reasoning problems, and how does this capability vary across algebra, logic, and planning tasks and with problem complexity?”
+
+You have access to the following resources:
+
+Models:
+- gpt-4o, o1-preview, Gemini 1.5 Pro via the provided inference utilities
+- You can call these models using: from utils.llm_inference import LLMInference
+- API key is provided with the LLMInference initialization function
+- You can use the batch_generate() function to speed up the experiment
+- Computational budget: 300 API calls per model
+
+Datasets:
+QuestBench, consisting of underspecified reasoning problems where the instance is solvable by asking at most one clarification question. The benchmark includes Logic-Q (one missing proposition), Planning-Q (PDDL planning with partially observed initial state where one additional observation disambiguates the shortest plan), and GSM-Q (grade school math problems with a missing condition, in verbalized and equation forms).
+
+Please design and execute experiments to investigate this research question. Document your experimental plan, run **FULL** experiments, and provide conclusions at different levels of detail.
+
+---
+
+## Experimental Design
+
+1) Multi-choice question-asking accuracy (four domains; three prompt regimes)
+- Procedure
+  - Zero-shot (ZS): For each instance, prompt exactly as specified in Appendix C.1 of the paper for the corresponding domain:
+    - Logic domain: Use the “Question: Is Alice [attribute]?” vs “End questioning” template. If an instance includes an “invalid set” (attributes you may not ask), include a single line immediately before the final question: “You may not ask if Alice is [attr1], [attr2], …”.
+    - Planning domain: Provide full PDDL domain, problem objects, initial conditions, goal, and numbered possible questions as options 0..N and a single “No questions needed.” option. Keep the line “Please reason step-by-step, then generate "Answer:" followed by the number of the option and nothing else.” in the ZS version (matches Appendix C.1).
+    - Verbal math domain: Provide the math word problem and numbered “Possible questions”, ending with an option “No questions needed.”, and require output exactly in the form “Choice: number”.
+    - Equation math domain: Same as verbal math but the problem is given as equations/CSP variables; require output “Choice: number”.
+  - ZS + CoT: Same as ZS, but:
+    - Logic/verbal/equation math: Insert one sentence immediately before the final-answer instruction: “Please reason step-by-step before answering.” The final output format must still be exactly one of: “Question: Is Alice [attribute]?”, “End questioning” (logic), or “Choice: number” (math).
+    - Planning: Leave the built-in step-by-step line as-is (already included in Appendix C.1).
+  - 4-shot (4S): Prepend four in-context examples formatted identically to the test prompt for the same domain. Each in-context example must include the full input and a single gold output line in the exact final-output format for that domain. Do not use any example that appears in the evaluation set. Selection of exemplars: stratify by difficulty axes (see §3.4 of the paper) and pick one example from each quartile of backwards-search depth d; the fifth exemplar slot is unused to remain faithful to “four-shot.” [uncertain: the exact exemplars used in the paper]
+  - Instance order: Shuffle instances with a fixed seed (seed=2025) per domain and per prompt regime. Run each model once per regime.
+  - Dataset coverage:
+    - Logic and planning domains: evaluate all available instances.
+    - Verbal/equation math domains: evaluate the representative subsets of size 288 (verbal) and 151 (equation) as in the paper. If the subsets are not pre-marked, construct them by stratified sampling on d, |X|, |C|, and 𝔼BF to match the marginal histograms of the full sets (10 bins per variable; proportional sampling).
+- What to record per instance
+  - Raw model response string.
+  - Parsed final decision (attribute string or option index).
+  - Whether the decision is in the ground-truth sufficient set (boolean).
+  - If multiple correct options exist, record the full ground-truth set size s.
+  - Metadata: |X|, |C|, d, b (blocks; planning only), 𝔼BF (if provided), instance ID, prompt regime, model ID, latency/tokens if available.
+- Paper correspondence: Table 2.
+
+2) Algorithmic baselines (depth-limited backwards search)
+- Procedure
+  - Logic domain:
+    - Implement the backwards-search procedure from Appendix B.1.1 (starting at y and at ¬y) but terminate at a fixed depth D ∈ {3, 5, 10}. At each depth, accumulate disjunctions of conjunctions that imply y and ¬y. A variable x is deemed sufficient at depth ≤ D if there exists a pair of partial assignments that (1) imply y and ¬y respectively and (2) differ on x only (as defined in Eq. (1)-(2) in Appendix B.1).
+    - Prediction rule: if any sufficient variable found within depth D is among the askable set and not in the invalid set, return it; otherwise, fall back to a uniform random choice over askable options (excluding invalids).
+  - Planning domain:
+    - Implement the backwards partial-state BFS from Appendix B.2.1, limited to depth D ∈ {3, 5, 10}. Search for two distinct optimal partial-state trajectories that are both consistent with the given partially-observed initial state and that yield distinct shortest plans. If found, compute the minimal differentiating atom set between the two partial-state frontiers (Appendix B.2.2 Step 2.b) and pick the first atom that appears in the provided options.
+    - If no such differentiator is reached by depth D, choose uniformly at random among the options.
+  - Verbal/equation math domains: run the exact CSP-based backwards search (equation graph) to locate a minimal sufficient variable at depth ≤ D; else random.
+- What to record: predicted question, whether found by search vs random fallback, and correctness.
+- Paper correspondence: Table 2, BFS rows.
+
+3) Correlation with difficulty axes
+- Procedure
+  - Compute per-instance correctness (1/0) from Task 1 (ZS, ZS+CoT, 4S).
+  - For each domain and prompt regime, compute Spearman’s rank correlation (ρ, p-value) between correctness and each axis:
+    - d (backwards search depth),
+    - |X| (number of variables),
+    - |C| (number of constraints; not applicable in planning if missing),
+    - b (number of blocks; planning only),
+    - 𝔼BF (expected # of brute-force guesses; see Evaluation Details for computation).
+  - Plot binned accuracy curves:
+    - Same binning as Figure 4: use 10 equal-width bins for each axis; for the logic domain, aggregate units of 5 on the x-axis for |X| and |C|.
+- What to record: per-bin counts and accuracies, ρ and p-values in a table; save plots.
+- Paper correspondence: Table 3 and Figure 4.
+
+4) Reasoning with sufficient information (well-specified variants)
+- Procedure
+  - For each underspecified instance, construct a well-specified variant by restoring one sufficient piece of information:
+    - Logic: add one assignment x=a where x ∈ sufficient set C(Ã) (Eq. (2), Appendix B.1) with a value consistent with a valid derivation.
+    - Planning: set the withheld atom to True and to False (two variants), provided either yields a unique shortest plan (Appendix B.2.2).
+    - Verbal/equation math: use the original fully specified versions produced during annotation (Appendix B.3–B.4).
+  - Prompt exactly as in Appendix C.2 for each domain, requiring a single final answer (“Yes/No” in logic; plan list in planning; numeric answer in math).
+- What to record: raw output, parsed final answer, correctness per variant.
+- Paper correspondence: Table 8.
+
+5) Filtered question-asking (conditioned on correct reasoning)
+- Procedure
+  - For each model+prompt regime, create a filtered subset consisting only of underspecified instances for which the same model+regime correctly solved at least one corresponding well-specified variant from Task 4.
+  - Re-run Task 1 on this filtered subset (do not change prompts).
+- What to record: accuracy on filtered subset; difference from unfiltered accuracy; number of retained samples.
+- Paper correspondence: Tables 5–6.
+
+6) Detecting underspecification (recognizing uncertainty)
+- Procedure
+  - Build a mixed evaluation set by merging:
+    - underspecified instances (original Task 1 inputs),
+    - well-specified variants from Task 4.
+  - Prompt exactly as in Appendix C.3:
+    - Logic: three-way output “Yes”/“No”/“Not sure”.
+    - Planning: “Answer: (…)” or “Not sure”.
+    - Math: “Answer: [numeric]” or “Not sure”.
+  - Scoring target: only the “Not sure” class (treat well-specified as negative; underspecified as positive).
+- What to record: confusion counts for the “Not sure” class (tp, fp, fn), F1, and a proportional-random baseline (assign “Not sure” to a uniformly random subset with the same positive rate).
+- Paper correspondence: Table 7.
+
+
+## Evaluation Details
+
+- Parsing and normalization
+  - Logic domain (Task 1):
+    - Accept exactly one of:
+      - “Question: Is Alice {attribute}?” Extract attribute via regex r'[Qq]uestion:\s*Is Alice\s+([A-Za-z\- ]+)\?\s*$'; lowercase and trim spaces/hyphens.
+      - “End questioning” (case-insensitive, trim whitespace).
+    - A prediction is correct iff:
+      - it is “End questioning” and the instance is well-specified (rare in this domain), or
+      - the extracted attribute is in the instance’s sufficient set C(Ã), and not in the invalid set (Appendix B.1.2 Step 2).
+    - Any other text or malformed output counts as incorrect.
+  - Planning domain (Task 1):
+    - Extract the last integer in the output after the token “Answer:” if present; otherwise, the last integer anywhere in the string. Regex r'(-?\d+)' and cast to int.
+    - Valid indices are 0..N. Out-of-range or non-integer → incorrect.
+    - Correct iff index ∈ ground-truth correct index set (may contain multiple indices), including the “No questions needed.” index when appropriate.
+  - Verbal/equation math (Task 1):
+    - Extract an integer after “Choice:” (regex r'[Cc]hoice:\s*(-?\d+)'). If missing, fall back to last integer in the string. Validate 0..N. Score as above (multiple correct allowed).
+  - Well-specified variants (Task 4):
+    - Logic: accept exactly “Yes” or “No” (case-insensitive; trim). Any other string → incorrect.
+    - Planning: parse “Answer:” followed by a comma-separated list of well-formed actions in parentheses, e.g., (pick-up a), (stack a b). Normalize by lowercasing predicates/objects and stripping spaces. Validate by simulating from the given initial state using the PDDL transition rules (Appendix B.2) and checking that the final state satisfies the goal and that the plan length is minimal among all valid plans. If plan invalid or not minimal → incorrect.
+    - Math: extract the numeric after “Answer:”. Strip commas and spaces. Parse as Decimal; compare to gold numeric with tolerance 1e-9. If gold is integer, also accept exactly the same integer string (no units).
+  - Underspecification detection (Task 6):
+    - Positive prediction iff the normalized output equals exactly “Not sure” (case-insensitive; trimmed). All other outputs count as negative for the purposes of F1 on the “Not sure” class.
+- Metrics
+  - Accuracy (Tasks 1, 4, 5): mean of per-instance correctness (1/0). If multiple correct choices exist, any correct choice counts as 1.
+  - Difference vs. unfiltered (Task 5): Acc(filtered) − Acc(unfiltered), reported in percentage points.
+  - F1 for “Not sure” (Task 6): micro-F1 on the positive class only: F1 = 2·tp / (2·tp + fp + fn). Also report the positive-class rate used for the proportional-random baseline.
+  - Correlations (Task 3): Spearman’s ρ and two-sided p-value via scipy.stats.spearmanr over pairs (axis value, correctness). For instances missing an axis value, drop from that correlation only.
+- Computing 𝔼BF (if not provided)
+  - Logic and math: If choices enumerate all askable variables plus possibly “No questions needed.”, let m be the number of provided choices and s be the number of correct choices among them. Then 𝔼BF = (m + 1) / (s + 1), matching the without-replacement assumption used in the paper.
+  - Planning: Same as above where choices include atoms and “No questions needed.”. If “No questions needed.” is correct, include it in s.
+- Aggregation
+  - Report results per domain × prompt regime × model.
+  - Provide per-instance CSV logs (raw output, parsed output, correctness, metadata).
+  - For Figure 4-style plots, compute mean accuracy per bin with 95% Wilson score intervals (optional) for visualization consistency; the paper does not report CIs but logging them aids debugging.
+  - Random seeds: 2025 for shuffling and any random fallback decisions (e.g., baseline random choice, proportional-random labels in Task 6).
+
+
+## Implementation Notes
+
+- Domain-specific prompt templates (verbatim; ensure exact final-output markers)
+  - Logic (Task 1):
+    - Prefix with the rules text. If applicable, include one line: “You may not ask if Alice is [attr1], [attr2], …”.
+    - Then exactly:
+      - “You trying to discern whether a statement about Alice is true given some facts. You must decide whether you have enough information to determine whether the final statement is true. You may respond with one of the following-
+If you do not have enough information yet, you may ask a question about an attribute of Alice, in the form of "Question: Is Alice [attribute]?". Ask the best question that, regardless of how it is answered, provides the most information about the final statement.
+Once you have enough all information necessary to determine the truth value of the statement, you can terminate with "End questioning".
+Generate one of "Question: Is Alice [attribute]?" or "End questioning" and nothing else.”
+  - Planning (Task 1):
+    - Include PDDL domain, object list, Known facts, Goal state, and the numbered “Possible questions:”.
+    - End with: “Please reason step-by-step, then generate "Answer:" followed by the number of the option and nothing else.”
+  - Verbal math (Task 1):
+    - “You are trying to solve a math problem. You must decide whether you have enough information to solve the math problem. Please respond with one of the following-
+If you do not have enough information to solve the math problem, you may ask a question back to the user from a set of predefined "Possible questions". Otherwise, choose "No questions needed." Generate the number of your choice in the form "Choice: number"”
+  - Equation math (Task 1): Same as verbal math; the “Math problem:” contains the CSP-style statement.
+  - Well-specified variants (Task 4):
+    - Logic: “You will presented with a binary question about an attribute of Alice. Please answer it with "Yes" or "No".”
+    - Planning: “Please answer with "Answer:" followed by the plan in the form of a comma-separated list of ([action] [args]) (e.g. (pick-up a), (stack a b), ...).”
+    - Math: “Please answer with "Answer:" followed by the answer to the math question. Only include the raw numerical answer, do not include any units or thousands separators.”
+  - Underspecification detection (Task 6):
+    - Logic: allow “Yes”/“No”/“Not sure”.
+    - Planning: allow plan or “Not sure”.
+    - Math: allow numeric “Answer:” or “Not sure”.
+- Output-parsing caveats
+  - Always prefer the last well-formed final-output marker if the model emits multiple (e.g., in CoT).
+  - Strip trailing punctuation and whitespace. Lowercase attributes for matching in logic.
+  - Treat any malformed or missing final marker as incorrect.
+- Multiple correct answers
+  - Some instances have multiple sufficient variables; any in the ground-truth set counts as correct. Do not penalize for not picking a “most minimal” one, as long as it is in the marked sufficient set and not in the invalid set (logic).
+- Planning plan validation (Task 4)
+  - To test minimality: run a BFS planner from the given initial state until reaching the goal; compare the returned shortest length to the submitted plan length. If lengths differ, mark as incorrect even if the submitted plan is valid but non-optimal.
+- Difficulty metadata
+  - If |X|, |C|, d, b, or 𝔼BF are not provided in the data, compute:
+    - d via backwards search depth needed to derive a sufficient set (logic/math) or the longest shortest-path depth to the goal among consistent initial states (planning) [uncertain: exact tie-breaking conventions].
+    - |X| as the number of unique variables/atoms referenced in constraints (logic/math) or initial-state atoms (planning).
+    - |C| as the number of unique constraints/equations/rules (not used in planning if absent).
+- Order of operations
+  - Run Task 1 (question-asking) first.
+  - Then Task 4 (well-specified reasoning).
+  - Then Task 5 (filtered question-asking using Task 4 results).
+  - Then Task 6 (uncertainty detection).
+  - Finally Task 2 (algorithmic baselines) and Task 3 (correlations) can be computed offline using Task 1 correctness and metadata.
+- Budget-aware downsampling (if constrained)
+  - Maintain comparability by stratified sampling on d and 𝔼BF:
+    - Example per model under ~300 calls: logic=120, planning=120, verbal math=40, equation math=20, all stratified across d quintiles (and b quintiles in planning). Keep the same sampled IDs across regimes (ZS, ZS+CoT, 4S) for paired comparisons.
+  - Always report the sampled instance IDs and the marginal histograms of d, |X|, |C|, b, and 𝔼BF vs. the full sets.
+- Reproducibility
+  - Fix seeds for shuffling/sampling (2025).
+  - Log all prompts verbatim, with instance IDs, and archive raw outputs before parsing.
+  - Use consistent library versions for PDDL simulation and statistical tests; record versions in the report.
+- Pitfalls noted in the paper
+  - Logic domain includes “invalid set” attributes that must be disallowed at test time (Appendix B.1.2 Step 2). Ensure they appear in the prompt line “You may not ask …” and are excluded from acceptance in scoring.
+  - Planning “No questions needed.” is correct when all consistent initial states yield the same shortest plan (Appendix B.2.2 Step 2.a). Do not force a question in these cases.
+  - Some math problems in verbal form map to multiple human-validated CSPs; each is a separate instance. Do not collapse them.

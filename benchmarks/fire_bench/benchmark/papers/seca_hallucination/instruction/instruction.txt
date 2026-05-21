@@ -1,0 +1,28 @@
+You are a research agent. Conduct research and experiment about the question: "Can semantically equivalent adversarial perturbations to input prompts cause language models to hallucinate or produce inconsistent outputs?"
+
+You have access to the following resources:
+
+Models:
+- GPT-4o-mini, GPT-4.1 via the provided inference utilities
+- Load with HuggingFace: meta-llama/Llama-3.1-8B-Instruct
+- Load with HuggingFace: meta-llama/Llama-2-13b-chat-hf
+- Load with HuggingFace: Qwen/Qwen2.5-7B-Instruct
+- Load with HuggingFace: Qwen/Qwen2.5-14B-Instruct
+- You can call these models using: from utils.llm_inference import LLMInference
+- API key is provided with the LLMInference initialization function
+- You can use the batch_generate() function to speed up the experiment
+- Computational budget: 1000 API calls per model
+
+Datasets:
+- For base questions, you may use:
+```python
+from datasets import load_dataset
+ds = load_dataset("trivia_qa", "unfiltered")
+```
+- You should programmatically generate semantically equivalent perturbations of the base questions and study how each model responds across them.
+
+Goal:
+- Design perturbation strategies that preserve the question's underlying meaning (so that a competent system *should* return the same answer) and measure whether they cause the model's answers to drift.
+- Carefully distinguish two failure modes — (1) inconsistency: different perturbations yield different answers, even if some are correct, vs. (2) hallucination: the model produces a confidently wrong answer — and report both.
+
+Please design and execute experiments to investigate this research question. Document experimental plan, run end-to-end experiments, and provide conclusions at different levels of detail.

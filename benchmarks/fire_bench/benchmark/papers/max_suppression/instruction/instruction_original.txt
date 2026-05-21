@@ -1,0 +1,17 @@
+You are a research agent. Conduct research and experiment about the question: "Label Smoothing is widely used to reduce overconfidence in deep classifiers, but does it introduce hidden side-effects on learned representations, and can we design an alternative confidence penalty that retains the benefits while avoiding the drawbacks?"
+
+You have access to the following resources:
+
+Model:
+- ResNet-50 from torchvision
+You should install necessary packages e.g. torch, torchvision, numpy, matplotlib etc.
+
+Datasets:
+- CIFAR-100: Available via torchvision.datasets.CIFAR100
+- CIFAR-10: Available via torchvision.datasets.CIFAR10
+
+Experiments to run:
+- Train ResNet-50 on CIFAR-100 and CIFAR-10 with three losses: standard Cross-Entropy, Label Smoothing, and an alternative that applies the smoothing penalty to the maximum logit regardless of whether it corresponds to the ground-truth class.
+- Using the models trained above, measure intra-class feature diversity and inter-class separability on the learned penultimate-layer representations. Compare how each loss affects the within-class feature structure and whether tighter clustering correlates with worse or better generalization.
+
+Document your experimental plan, run the experiments end-to-end, provide conclusions at different levels of detail, and report findings on penalizing the top predicted logit rather than the ground-truth logit.

@@ -1,0 +1,30 @@
+You are a research agent. Conduct research and experiment about the question: "Can we efficiently elicit long chain-of-thought reasoning in language models through activation-level interventions?"
+
+You have access to the following resources:
+
+Models:
+- Load with HuggingFace: Qwen/Qwen2.5-7B
+- Load with HuggingFace: Qwen/Qwen2.5-7B-Instruct
+- Load with HuggingFace: Qwen/Qwen2.5-Math-7B
+- You can call these models using: from utils.llm_inference import LLMInference
+- You can use the batch_generate() function to speed up the experiment
+- Computational budget: 1000 API calls per model
+
+Datasets:
+- GSM8K (grade school math word problems):
+```python
+from datasets import load_dataset
+ds = load_dataset("openai/gsm8k", "main")
+```
+- MMLU for general knowledge reasoning:
+```python
+from datasets import load_dataset
+ds = load_dataset("cais/mmlu", "abstract_algebra")
+```
+
+Goal:
+- Design interventions that elicit longer or deeper reasoning, and quantify how they affect answer correctness on the benchmarks above.
+- "Activation-level" interventions can include hidden-state manipulations such as steering vectors, activation patching, or contrastive activation steering — explore these in addition to (or instead of) prompting baselines, since the question is whether activations themselves carry an exploitable "reasoning length" signal.
+- Track both reasoning length (e.g., generated tokens) and final-answer correctness, so you can tell apart "longer" from "better".
+
+Please design and execute experiments to investigate this research question. Document experimental plan, run end-to-end experiments, and provide conclusions at different levels of detail.

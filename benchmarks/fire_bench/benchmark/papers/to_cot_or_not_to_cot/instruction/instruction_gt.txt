@@ -1,0 +1,307 @@
+You are a research agent. Conduct research and experiment about the question: “How much performance improvement does Chain-of-Thought (CoT) prompting provide over Direct Answer prompting across different reasoning categories (Commonsense, Knowledge, Symbolic, Mathematical, Soft Reasoning), and which categories show statistically signficant gains?”
+
+You have access to the following resources:
+
+Model:
+- OpenAI's gpt-4o
+- Claude's claude-3-5-sonnet-20240620
+- Load with HuggingFace: mistralai/Mistral-7B-Instruct-v0.3
+
+- You can call these models using: from utils.llm_inference import LLMInference
+- API key is provided with the LLMInference initialization function, computation budget is 10000 API calls per model
+
+
+
+Datasets:
+- GSM8K (grade school math word problems):
+You can use the following code to load the dataset:
+```python
+from datasets import load_dataset
+ds = load_dataset("openai/gsm8k", "main")
+``` or directly read data from /data/gsm8k/
+
+
+- CommonSenseQA (commonsense multi-choice QA): /data/commonsenseqa/
+You can use the following code to load the dataset:
+```python
+from datasets import load_dataset
+ds = load_dataset("tau/commonsense_qa")
+
+- FOLIO (natural language reasoning with first-order logic): /data/folio/
+You can use the following code to load the dataset:
+```python
+from datasets import load_dataset
+
+# Login using e.g. `huggingface-cli login` to access this dataset
+ds = load_dataset("yale-nlp/FOLIO")
+
+- Winogrande (commonsense binary-choice reasoning): 
+you can load it by using
+```python
+from datasets import load_dataset
+ds = load_dataset("allenai/winogrande", "winogrande_debiased")
+```
+
+Prompts:
+- zero-shot direct answer
+- zeroshot CoT
+- few-shot direct answer
+- few-shot CoT
+
+Evaluation Methods:
+- Particularly, for GSM8K, use Program-aided Language Model that executes the LMgenerated plan with a Python interpreter. 
+- For logical reasoning datasets, use Satisfiability-Aided Language Model that uses automated theorem prover Z3 to solve the generated specifications
+
+Constraint:
+- You should **NOT** use any web search tool or try to answer the question based on your prior knowledge, but run **FULL** end to end experiment and draw conclusion from your experiment results. 
+- When loading dataset using ```load_dataset("allenai/winogrande", "winogrande_debiased")```, don't try to add other arguments like "cache_dir".
+
+Please design and execute experiments to investigate this research question. Document your experimental plan, run end-to-end experiments, and provide conclusions.
+
+---
+
+## Experimental Design
+
+1. Zero-shot vs. CoT across four datasets
+   - Procedure
+     - Datasets/splits:
+       - GSM8K: use the official test split.
+       - CommonSenseQA: use the validation/dev split (gold labels available).
+       - WinoGrande (winogrande_debiased): use the validation split.
+       - FOLIO: use the default evaluation split with gold labels [uncertain: “test” vs “validation”; use the split with labels in the HF dataset].
+     - Prompting strategies per sample:
+       - Zero-shot Direct Answer (DA).
+       - Zero-shot CoT.
+     - Decoding: greedy (temperature=0, top_p=1).
+     - Ordering:
+       - Evaluate DA and CoT on the exact same item order for paired significance tests.
+       - Randomize the order of items once (fixed seed=2025) and reuse for all conditions to avoid any accidental positional bias.
+     - Input and prompting:
+       - Use the dataset question text verbatim (no added step-by-step hints in the question content).
+       - See “Implementation Notes” for dataset-specific prompt templates and final-answer formatting.
+     - What to record
+       - Raw model outputs (full text).
+       - Parsed answers and parse success/failure flags.
+       - Character index of answer start in output (diagnostic).
+       - Token counts (input/output) if available.
+       - For each sample: per-condition correctness (0/1).
+     - Paper mapping: Figure 3 (left and right), Appendix F.1 and F.3.
+
+2. Few-shot vs. CoT across four datasets
+   - Procedure
+     - Same datasets/splits and decoding as Task 1.
+     - Few-shot demonstrations per dataset (m-shots from the paper’s Appendix/Table 4):
+       - GSM8K: 8 shots.
+       - CommonSenseQA: 7 shots.
+       - WinoGrande: 0 shots (few-shot not used).
+       - FOLIO: 4 shots.
+     - Demonstration selection:
+       - Uniform random from the training split (or “train” file if provided), stratified by gold label where applicable; seed=2025.
+       - Ensure no overlap with evaluation instances (by ID).
+     - Prompting strategies:
+       - Few-shot Direct Answer.
+       - Few-shot CoT.
+     - What to record
+       - Same as Task 1.
+     - Paper mapping: Appendix E and Figure 8.
+
+3. Planning vs. execution variants (Math and Logic)
+   - Procedure
+     - Datasets: GSM8K (math) and FOLIO (logic).
+     - Run five conditions per sample:
+       1) Few-shot Direct Answer (baseline).
+       2) Few-shot CoT (baseline).
+       3) Plan + Direct Solver (LM generates a formal plan and then directly answers, without external tools).
+       4) Plan + CoT Solver (LM generates a formal plan and then “executes” it step-by-step in natural language).
+       5) Plan + Tool Solver:
+          - GSM8K: PAL with a Python interpreter executing the LM-generated program.
+          - FOLIO: SatLM with Z3 solving the LM-generated logical specification.
+     - Planning prompt: few-shot prompt to output a plan in a rigid format; see “Implementation Notes” for exact delimiters and structure.
+     - Execution:
+       - For 3) and 4), the plan is fed back to the LM with the specified solver prompt to elicit a direct or step-by-step derivation; the final answer must follow the required final-answer format for parsing.
+       - For 5), extract the code/spec between delimiters and send to the tool (Python or Z3). Capture tool stdout/stderr and the computed final answer.
+     - What to record
+       - Full raw LM outputs for planning and solving.
+       - Extracted plan strings and parse success/failure.
+       - Tool execution logs and exceptions.
+       - Per-sample correctness for each of the five settings.
+       - Unparseable rates for plan and answer per setting.
+     - Paper mapping: Section 5; Figure 5 and Figure 6; Appendix H and Table 20.
+
+4. “Equals-sign” symbolic slice analysis
+   - Procedure
+     - For each sample and condition (DA, CoT; zero-/few-shot), compute two boolean features:
+       - q_has_eq: whether the problem text contains “=”.
+       - out_has_eq: whether the model output contains “=”.
+     - Bin each example by has_eq = (q_has_eq OR out_has_eq).
+     - Compute and report accuracy deltas (CoT − DA) separately for has_eq and not_has_eq bins.
+     - What to record
+       - Per-bin counts, accuracies, and deltas.
+     - Paper mapping: Section 4.2 (“Why do … get a boost?”) and Figure 4; Appendix G.
+
+5. Diagnostics and robustness
+   - Procedure
+     - Track unparseable answer rates for all conditions, as in Appendix F.3 (Tables 9–12).
+     - Track average answer start index (characters) per condition, verifying DA answers appear early (target < 60 chars for DA) and CoT later, as in Tables 13–16.
+     - If DA answer start index median > 60 for a dataset/model, iteratively tighten DA prompts (see Implementation Notes) and re-run only that (dataset, model, prompt) setting.
+     - What to record
+       - Unparseable counts and rates.
+       - Average answer start indices and distributions.
+     - Paper mapping: Appendix F.3.
+
+## Evaluation Details
+
+- Metrics
+  - Accuracy for multiple-choice and categorical tasks:
+    - Acc = (1/N) * sum_i 1[ŷ_i == y_i].
+    - For unparseable outputs (no extractable answer), treat as incorrect, except in Plan + Tool Solver when plan is unparseable:
+      - If task is multiple-choice (CommonSenseQA, WinoGrande), follow the paper: random guess when the generated plan cannot be parsed by the tool; otherwise incorrect for non-MC tasks (GSM8K, FOLIO).
+  - Accuracy for GSM8K numeric:
+    - Normalize the predicted string to a numeric value:
+      - Strip currency symbols, commas, spaces.
+      - Extract the last number in the output (regex: [-+]?\d+(?:\.\d+)?), unless a stricter final-answer format is detected (see Implementation Notes).
+      - For fractions, parse “p/q” to float p/q if present.
+      - Evaluate correctness by exact numeric equality for integers; for reals, |pred − gold| ≤ 1e-6.
+    - In PAL (Plan + Tool Solver), if code fails to run or no numeric is produced, mark incorrect.
+  - Accuracy for FOLIO 3-way labels:
+    - Normalize predicted label to one of: “True”, “False”, “Unknown”.
+    - Case-insensitive; also accept “Entailed”→True, “Contradicted”→False, “Both/Neither/Unknown”→Unknown.
+    - If SatLM+Z3 returns a solver result [uncertain mapping specifics], map solver’s outcome to one of True/False/Unknown [uncertain], else if the plan is unparseable by the solver and the underlying task is not MC, mark incorrect.
+
+- Output normalization and parsing
+  - Multiple-choice (CommonSenseQA):
+    - Accept A–E; strip whitespace; uppercase.
+    - If model outputs both rationale and answer, extract the last A–E after a “Answer:” tag or within the final-answer line (see Implementation Notes).
+    - Ground truth: use ‘answerKey’ letter.
+  - WinoGrande:
+    - Model must output exactly “1” or “2” (or map from option text back to index).
+    - Normalize to integer {1,2}. If the model outputs the option text, match to option1/option2 by exact string comparison stripped of punctuation and case-folded; ties/unmatched → unparseable → incorrect.
+  - GSM8K (DA/CoT without tools):
+    - Extract final numeric using the final-answer line pattern; if absent, fallback to the last number regex. If still missing, unparseable → incorrect.
+  - GSM8K (PAL):
+    - Extract Python code between delimiters; execute in a clean sandbox; read the final print/return variable “answer” [uncertain exact variable name; enforce in prompt]. If execution error, mark incorrect.
+  - FOLIO (DA/CoT without tools):
+    - Extract the final categorical token (“True”, “False”, “Unknown”) after the required final-answer marker.
+  - FOLIO (SatLM):
+    - Extract FOL/Z3 specification between delimiters; attempt to construct the Z3 problem; if parsing/typing errors occur, random guess only if the underlying label space is multiple-choice (it is 3-way classification, so do uniform(3) per paper’s logic for MC-like settings); otherwise incorrect. [uncertain: the paper uses random guess for MC tasks and incorrect otherwise; FOLIO is 3-way classification—treat as MC and guess uniformly when spec is unparseable.]
+
+- Aggregation and statistics
+  - Per-sample: record correctness for every condition.
+  - Per-condition (dataset × model × prompt regime): mean accuracy; 95% bootstrap CIs.
+  - Per-category: average accuracies across datasets in the same category (Math: GSM8K; Commonsense: CommonSenseQA, WinoGrande; Symbolic/Logical: FOLIO); report macro-average across datasets within category.
+  - CoT deltas: Δ = Acc(CoT) − Acc(DA) for each dataset × model × shot setting.
+  - Significance testing (paired bootstrap, one-sided):
+    - For each dataset × model × shot setting:
+      - Draw B=10,000 bootstrap resamples over items (with replacement).
+      - For each resample b, compute Δ_b = Acc_b(CoT) − Acc_b(DA).
+      - p-value = fraction of resamples with Δ_b ≤ 0.
+    - Multiple comparisons: Bonferroni-correct at family-wise α=0.05 over M comparisons, where M = (#datasets actually evaluated) × (#models) × (#shot settings evaluated). Threshold p ≤ 0.05 / M.
+    - Report both raw p and adjusted threshold.
+  - “Equals-sign” slicing:
+    - For each bin (has_eq vs not_has_eq): report Acc(DA), Acc(CoT), and Δ, plus bin counts.
+
+## Implementation Notes
+
+- General decoding and determinism
+  - Use greedy decoding everywhere: temperature=0, top_p=1, no sampling, no beam search.
+  - Fix a global seed=2025 for any randomization (few-shot example selection, bootstrap, item order).
+  - Enforce max_tokens large enough to capture full CoT (e.g., 512 for DA, 1024 for CoT) [tune per model to avoid truncation].
+
+- Prompt templates and final-answer formats
+  - CommonSenseQA
+    - Zero-shot Direct Answer (single user turn; no prefixed assistant content for closed models):
+      - “You are a helpful AI assistant that will answer reasoning questions. At the end, output exactly: Answer: <A|B|C|D|E>.
+      Question: {question}
+      Answer Choices:
+      (A) {A}
+      (B) {B}
+      (C) {C}
+      (D) {D}
+      (E) {E}
+      Only write one line in the format: Answer: X”
+    - Zero-shot CoT:
+      - “Explain your reasoning step by step, then end with one line: Answer: <A|B|C|D|E>.
+      Question: {question}
+      Choices: (A)…(E)
+      Let’s think step by step.
+      Final line must be: Answer: X”
+    - Few-shot variants:
+      - Prepend m=7 exemplars with the same final “Answer: X” line; for CoT exemplars include short rationales; for DA exemplars include only the final line.
+  - WinoGrande (validation)
+    - DA:
+      - “Fill the blank with option 1 or 2. Output exactly one line: Answer: 1 or Answer: 2.
+      Sentence: {sentence with _}
+      Option 1: {option1}
+      Option 2: {option2}
+      Only output: Answer: 1 or Answer: 2”
+    - CoT:
+      - “Reason briefly about which option best fits the blank. Then output exactly one line: Answer: 1 or Answer: 2.”
+    - No few-shot per paper’s table.
+  - GSM8K
+    - DA (short form):
+      - “Solve the problem and output only the final number.
+      Problem: {question}
+      Final line format: Answer: <number>”
+    - CoT:
+      - “Solve step by step. Conclude with:
+      Therefore, the final answer is: <number>.
+      Problem: {question}”
+    - Few-shot (m=8) for DA and CoT with corresponding final-answer lines as above in each exemplar.
+    - PAL (Plan + Tool Solver)
+      - Planning prompt:
+        - “Write a Python function solve() that computes the final numeric answer for the problem. Use only Python standard library. At the end, print the final integer or float in a variable named answer. Enclose code between:
+        ```python
+        …code…
+        ```”
+      - Extraction and execution:
+        - Parse the code block fenced by ```python … ```.
+        - Execute in a sandbox; require that a variable named answer exists and is numeric.
+        - If exceptions occur or answer missing → incorrect.
+    - Plan + Direct Solver:
+      - After code, immediately output a line “Answer: <number>” (the LM must compute it itself without running the code).
+    - Plan + CoT Solver:
+      - After code, ask the LM: “Using the above plan, compute the result step-by-step in natural language. Finish with: Answer: <number>.”
+  - FOLIO
+    - DA:
+      - “Decide whether the Hypothesis is True, False, or Unknown given the Context. Output exactly one line: Answer: True or Answer: False or Answer: Unknown.
+      Context: {premises}
+      Hypothesis: {hypothesis}”
+    - CoT:
+      - “Explain your reasoning step by step. End with one line: Answer: True/False/Unknown.”
+    - Few-shot (m=4): examples with short CoT or direct final answer, mirroring the above format.
+    - SatLM (Plan + Tool Solver):
+      - Planning prompt to produce a Z3-checkable specification:
+        - “Translate the problem into first-order logic facts and rules usable with Z3 (Z3Py). Define predicates and constants explicitly. End with a check that determines whether the hypothesis is entailed, contradicted, or unknown. Enclose the Z3Py program between:
+        ```z3py
+        … code …
+        ```”
+      - Execution:
+        - Parse the fenced block; run Z3; map solver outcome to True/False/Unknown [uncertain mapping specifics; implement as: attempt entailment check and contradiction check; if neither holds, Unknown].
+      - If parsing/execution fails: uniform random guess over the 3 labels (consistent with treating as MC in the paper).
+
+- Output parsing and safeguards
+  - Always search for the required final line first (e.g., “Answer: X” for MC; “Therefore, the final answer is: N” for GSM8K CoT; “Answer: True/False/Unknown” for FOLIO). If missing, fallback to heuristic extraction (e.g., last A–E token; last number for GSM8K).
+  - Mark outputs as unparseable if neither method yields a valid label/number.
+  - Track average answer start index in characters; if DA answers systematically appear late (>60 char), strengthen DA prompt with “Answer immediately, without explanation.” and re-run that combination only.
+
+- Handling unparseable plans and tool failures
+  - For Plan + Tool Solver:
+    - GSM8K: any parse/exec failure → incorrect.
+    - FOLIO (3-way categorical): if the Z3 program is unparseable or aborted, guess uniformly among the 3 labels to compute accuracy (document the unparseable rate).
+  - For Plan + Direct/CoT Solver (LM executes its own plan): if the plan segment can’t be detected between delimiters, proceed with the solver prompt on the raw output; if no final answer is extractable, mark incorrect.
+
+- Order of operations
+  - Run DA first, then CoT, within each (dataset, model, shot) block to prevent potential CoT “leakage” into DA via caching or shared context in some backends.
+  - For planning experiments: generate the plan once per sample per model (few-shot planning prompt), and reuse the same plan text for both Direct Solver and CoT Solver variants to isolate the execution effect.
+
+- Edge cases and exclusions
+  - Exclude any example whose context exceeds the model’s context window after adding few-shot exemplars; if exclusions occur, report N_excluded and reason.
+  - For numeric answers that are explicitly currency or percentages in GSM8K, strip symbols and compare numerics.
+  - For WinoGrande, if the model outputs the filled sentence instead of 1/2, map back to option1/option2 by exact match after lowercasing and trimming punctuation; otherwise mark as unparseable.
+
+- Reproducibility artifacts
+  - Save JSONL per run with: dataset, split, item_id, model, prompt_type, raw_prompt, raw_output, parsed_answer, gold_label, correctness, answer_start_idx, contains_eq flags, and (if applicable) plan_text, tool_logs, tool_success.
+  - Summaries: per-condition accuracy and CI, CoT deltas, significance p-values (raw and Bonferroni threshold), unparseable rates, average answer start indices, equals-sign slice results.
+
+- Compute and budget
+  - Full-split evaluation is preferred. If API budget becomes tight, downsample uniformly at random (seed=2025) with N per dataset [uncertain cap]. Document any downsampling and keep it identical across DA/CoT for paired tests.

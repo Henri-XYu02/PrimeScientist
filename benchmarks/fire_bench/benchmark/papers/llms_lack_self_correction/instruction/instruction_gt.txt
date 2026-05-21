@@ -1,0 +1,219 @@
+You are a research agent. Conduct research and experiment about the question: "How do self-correction methods impact large language model performance across math, commonsense reasoning, and multi-hop question answering benchmarks?"
+You should prompt the models to undergo two rounds of self-correction.
+
+You have access to the following resources:
+
+Models:
+- OpenAI's gpt-3.5-turbo and gpt-4
+- Load with HuggingFace: meta-llama/Llama-2-70b
+- Use a temperature of 1
+- You can call these models using: from utils.llm_inference import LLMInference
+- API key is provided with the LLMInference initialization function
+- You can use the batch_generate() function to speed up the experiment
+- Computational budget: 300 API calls per model
+
+Datasets:
+- GSM8K (grade school math word problems): /data/gsm8k/
+You can use the following code to load the dataset:
+```python
+from datasets import load_dataset
+ds = load_dataset("openai/gsm8k", "main")
+
+- CommonSenseQA (commonsense multi-choice QA): /data/commonsenseqa/
+You can use the following code to load the dataset:
+```python
+from datasets import load_dataset
+ds = load_dataset("tau/commonsense_qa")
+
+- HotpotQA (open-domain multi-hop QA): /data/hotpotqa/
+You can use the following code to load the dataset:
+```python
+from datasets import load_dataset
+
+ds = load_dataset("hotpotqa/hotpot_qa", "distractor")
+ds = load_dataset("hotpotqa/hotpot_qa", "fullwiki")
+
+
+Experimental constraints:
+- Evaluate using the Exact Match accuracy metric
+
+Please design and execute **FULL** experiments to investigate this research question. Document your experimental plan, run your experiments, and provide conclusions at different levels of detail.
+
+---
+
+## Experimental Design
+
+1) Intrinsic self-correction on math, commonsense MCQ, and multi-hop QA
+- Procedure
+  - Sampling under API-call budget:
+    - Total per model: 60 items (5 calls each with two rounds → 300 calls).
+    - Suggested split: 24 math + 24 commonsense + 12 multi-hop. Use a fixed RNG seed (e.g., 20231014) for deterministic sampling.
+  - Three-step prompting per round (maximum 2 rounds):
+    - Initial answer (also serves as standard prompting baseline).
+    - Feedback generation referencing the immediately preceding answer.
+    - Revised answer incorporating the feedback.
+  - Round schedule and calls:
+    - Round 1 = 3 calls: initial → feedback → revise.
+    - Round 2 = 2 additional calls: feedback → revise (applied to Round-1 revised answer).
+    - Do not use ground-truth to control stopping; always run both rounds to completion.
+  - Input formatting and prompting strategy
+    - Math initial prompt:
+      - “Can you solve the following math problem? {question} Explain your reasoning. Your final answer should be a single numerical number, in the form \boxed{answer}, at the end of your response.”
+    - Math feedback prompt (default):
+      - “Review your previous answer and find problems with your answer.”
+    - Math refine prompt:
+      - “Based on the problems you found, improve your answer. Please reiterate your answer, with your final answer a single numerical number, in the form \boxed{answer}.”
+    - Commonsense initial prompt:
+      - “Q: {question}
+        Answer Choices: (A) {A} (B) {B} (C) {C} (D) {D} (E) {E}
+        Explain your reasoning. You must choose only one option from A to E. Your final answer should be a single letter from A to E, in the form (answer), at the end of your response.”
+    - Commonsense feedback prompt (default):
+      - “Review your previous answer and find problems with your answer.”
+    - Commonsense refine prompt:
+      - “Based on the problems you found, improve your answer. You must choose only one option from A to E. Please reiterate your answer, with your final answer a single letter from A to E, in the form (answer).”
+    - Multi-hop initial/feedback/refine prompts:
+      - Use the same three-step structure as above. The exact prompt text used in prior work is [uncertain]. If unavailable, use: initial “Answer the question concisely. Explain your reasoning. End with: Final Answer: <short answer>.”; feedback “Assume this answer could be either correct or incorrect. Review the previous answer carefully and report any serious problems you find.”; refine “Based on the problems you found, improve your answer. End with: Final Answer: <short answer>.”
+  - Splits:
+    - Use the test set for math (1,319 total; sample as specified).
+    - Use the dev set for commonsense (1,221 total; sample as specified).
+    - Multi-hop closed-book: use the same 100-question evaluation set as in prior work [uncertain]. If not accessible, sample 12 from the distractor dev split with a fixed seed, treating this as a proxy.
+- What to record
+  - Full raw model outputs at each step (initial, feedback, revised for each round).
+  - Extracted final answers for each step (normalized).
+  - Per-sample parseability flags for each step.
+  - Per-sample correctness (EM) at each step and round.
+  - Per-sample answer-change category after round 2: No Change; Correct⇒Incorrect; Incorrect⇒Correct; Incorrect⇒Incorrect (see Evaluation Details).
+  - Number of calls actually used per condition.
+- Correspondence
+  - Tables 3–6; Figure 1; Appendix A examples.
+
+2) Self-correction with oracle labels (stopping rule)
+- Procedure
+  - Same three-step structure as above, but use ground-truth to gate continuation:
+    - After initial answer, if EM-correct, stop (1 call total).
+    - Otherwise run feedback + revise (total 3 calls).
+    - After round-1 revise, if EM-correct, stop; else run round-2 feedback + revise (total up to 5 calls).
+  - Sampling (to fit budget): 60 total items per model across all datasets, same split as Task 1. (Call usage per item varies; track realized total.)
+  - Prompts identical to Task 1 (dataset-specific formats).
+- What to record
+  - All items from Task 1, plus per-item stop decision points and realized call counts.
+- Correspondence
+  - Section 3.2; Table 2 (design-wise; exact sizes differ due to budget).
+
+3) Feedback prompt ablations (intrinsic self-correction)
+- Procedure
+  - Same as Task 1 but vary the feedback prompt (keep initial and refine prompts fixed to maintain isolation):
+    - Variant A (default used above): “Assume that this answer could be either correct or incorrect. Review the answer carefully and report any serious problems you find.”
+    - Variant B: “Review your previous answer and determine whether it’s correct. If wrong, find the problems with your answer.”
+    - Variant C: “Verify whether your answer is correct, and provide an explanation.”
+  - Apply to 3× subsets per dataset under budget:
+    - Recommended: 12 math + 12 commonsense per variant for one model; optionally rotate variants across models to manage calls.
+  - Always run two rounds per item (5 calls/item).
+- What to record
+  - Same as Task 1, plus the feedback variant label.
+- Correspondence
+  - Tables 5 and 6 (prompts; models differ due to availability).
+
+4) Multi-agent debate vs self-consistency (math)
+- Procedure
+  - Debate configuration [structure matches prior work; exact prompt text is [uncertain]]:
+    - Agents: 3 parallel agents.
+    - Round 1: each agent proposes a solution with rationale; then critique each other’s solutions; produce updated answers. Final answer after round 1 is selected by a model-based judge or by agents’ final stated answers per debate template [uncertain].
+    - Round 2: repeat critique/update once more; select final answer.
+    - Call accounting per problem:
+      - Round 1 ≈ 6 responses; Round 2 ≈ 9 responses (to match Table 7).
+  - Self-consistency:
+    - Generate N independent CoT samples and select the majority normalized final answer.
+    - Use N ∈ {3, 6, 9} to match debate response counts.
+  - Sampling under budget:
+    - For one model, allocate 10 problems with debate Round 1 (≈60 calls) and 6 problems with debate Round 2 (≈54 calls); and for self-consistency run 10 problems at N=3 (30 calls), 10 at N=6 (60 calls), 6 at N=9 (54 calls). Total ≈ 258 calls; adjust counts as needed to respect 300-call cap considering overhead.
+  - Input prompt for math follows the same initial format as Task 1; ensure extracted final answer is in \boxed{answer}.
+- What to record
+  - Full raw outputs per agent per round; judge outputs; final selected answer; total calls.
+  - For self-consistency: all raw samples, normalized answers, vote tallies, ties.
+- Correspondence
+  - Section 4; Table 7.
+
+5) Optional: Prompt-design control on constrained generation [requires external data; run only if available]
+- Procedure
+  - Use a concept-set-to-sentence task (e.g., CommonGen-Hard) [uncertain].
+  - Initial prompt (control condition, improved baseline):
+    - “Write a reasonable paragraph that includes *ALL* of the above concepts.”
+  - Self-correction condition (as in prior work) [exact feedback/refine prompts are [uncertain]].
+  - Evaluate concept coverage (see Evaluation Details).
+- What to record
+  - Raw generations; list of detected covered concepts; coverage score per item; average coverage.
+- Correspondence
+  - Section 5; Table 8.
+
+## Evaluation Details
+
+- Output normalization and parsing
+  - Math:
+    - Extract the last occurrence of \boxed{...}. Regex: r"\\boxed\{([^}]*)\}". If none, fallback to the last numeric token in the final line.
+    - Normalize: strip whitespace; remove currency symbols and commas; if float-like, parse to Decimal then to canonical string without trailing zeros (e.g., 75.00 → 75); keep sign.
+    - Invalid or unparsable → mark as incorrect.
+  - Commonsense:
+    - Extract the last parenthetical single letter A–E. Regex: r"\(([A-E])\)(?!.*\([A-E]\))".
+    - Uppercase; if multiple or none, try to infer from “final answer” line; else mark as incorrect.
+  - Multi-hop:
+    - Extract the final short answer from the last line after “Final Answer:” (case-insensitive). If absent, take the final line trimmed.
+    - Normalize using HotpotQA’s standard normalization: lowercase, remove punctuation, articles (a/an/the), extra whitespace. If the official script is not available, implement SQuAD-style normalization identically.
+- Exact Match (EM)
+  - Per-sample EM = 1 if normalized prediction equals normalized gold; else 0.
+- Aggregation
+  - Per-condition accuracy = mean(EM) over the sampled set.
+  - Report 95% CIs via normal approximation or bootstrap (1,000 resamples; seed 20231014) if desired.
+  - Answer-change categories (for intrinsic self-correction after round 2):
+    - Let y0 = correctness of initial; y2 = correctness of final after round 2; and s0, s2 = normalized extracted answers. Category:
+      - No Change: s2 == s0 (string equality after normalization).
+      - Correct⇒Incorrect: y0=1 and y2=0 and s2 != s0.
+      - Incorrect⇒Correct: y0=0 and y2=1 and s2 != s0.
+      - Incorrect⇒Incorrect: y0=0 and y2=0 and s2 != s0.
+    - Compute percentages over evaluable samples; report counts and proportions.
+- Oracle stopping (Task 2)
+  - Use the same EM function to gate steps:
+    - If EM(initial)=1 → stop.
+    - Else run feedback+revise; if EM(revise1)=1 → stop; else run the second feedback+revise.
+  - Record realized calls per item and average calls per dataset.
+- Self-consistency (Task 4)
+  - Generate N independent samples with identical initial prompt.
+  - Parse/normalize each sample’s final answer as above.
+  - Majority voting over normalized answers; ties broken deterministically by lexicographic order of normalized answers (record as tie).
+- Multi-agent debate (Task 4)
+  - Parse each agent’s final stated answer per round; use the debate protocol’s final selection (judge or consensus) [uncertain].
+  - EM computed on the selected final answer.
+- Concept coverage (Task 5) [optional]
+  - For each concept c:
+    - Lowercase and tokenize on whitespace/punctuation.
+    - If multi-word: require all tokens to appear as whole-word matches in the generated text (lowercased), in any order; for single-word: whole-word match.
+  - Coverage = (# concepts matched) / (# concepts provided).
+  - Average coverage over the set.
+
+## Implementation Notes
+
+- Pitfalls and caveats
+  - Do not use labels to influence intrinsic self-correction prompts or stopping; labels are used only for evaluation (and for oracle stopping in Task 2).
+  - Enforce output-format constraints in prompts; otherwise parsing failures inflate error rates.
+  - For multi-hop closed-book, ensure no retrieval or external tools are used.
+  - Maintain identical decoding configuration across conditions within each model to ensure fair comparison.
+- Prompt templates and delimiters
+  - Include explicit delimiters when passing previous answers to the feedback/refine steps:
+    - Prefix the model’s prior answer with: “Previous answer:\n{model_output}”
+    - Then append the feedback or refine instruction as specified.
+  - For multi-agent debate, clearly mark agent roles, turns, and the final selection step; store per-agent transcripts with unique IDs [exact template text is [uncertain]].
+- Output parsing logic
+  - Always run extraction on the last assistant message in the step.
+  - Prefer the most constrained final-answer pattern (e.g., \boxed{...} or (A)–(E)) over any earlier mentions.
+  - Strip trailing punctuation from extracted spans (e.g., periods after numbers or letters).
+- Order of operations
+  - For each sampled item:
+    1) Run initial (standard) prompting and score it (serves as baseline).
+    2) Run intrinsic self-correction Round 1 and Round 2 sequentially and score each.
+    3) For ablations, repeat 2) with the alternate feedback prompts (on disjoint sampled subsets).
+    4) Separately, run oracle-stopping self-correction (Task 2) on its designated sampled subset.
+    5) For math, run self-consistency and multi-agent debate on their designated subsets.
+- Reproducibility
+  - Fix RNG seeds for sampling and any tie-breaking.
+  - Log prompts verbatim, model identifiers, timestamps, and token usage per call.
+  - Preserve full transcripts for auditability (initial, feedback, refine across rounds; all agents/rounds in debate).

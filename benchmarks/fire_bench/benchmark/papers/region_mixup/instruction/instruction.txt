@@ -1,0 +1,19 @@
+You are a research agent. Conduct research and experiment about the question: "How does mixing corresponding spatial regions across multiple training images, rather than blending entire images, affect the generalization and robustness of deep image classification models?"
+
+You have access to the following resources:
+
+Model:
+- PreAct ResNet-18, implemented in PyTorch. You should implement or source this architecture.
+
+You should install necessary packages e.g. torch, torchvision, numpy, matplotlib etc.
+
+Datasets:
+- A small subset of CIFAR-10: Available via torchvision.datasets.CIFAR10.
+
+Experiments to run:
+
+- Accuracy comparison across augmentation strategies: Train PreAct ResNet-18 on CIFAR-10 using four augmentation strategies: (a) Vanilla Mixup, (b) a region-based mixup variant that divides images into a k×k grid and independently interpolates each tile across image pairs with k=1, and (c) the same with k=2. Apply standard random crop and horizontal flip. Average results over 3 runs. Report top-1 test accuracy for each method and dataset. Also experiment with combining a standard cross-entropy loss term alongside the mixup loss, and observe its effect.
+- Ablation on the cross-entropy loss term: On CIFAR-10, compare each augmentation method (Vanilla Mixup, region-based mixup k=1 and k=2) trained with and without an additional standard cross-entropy loss term. Report top-1 test accuracy averaged over 3 runs.
+- Adversarial robustness evaluation: Using the trained models from experiment 1, evaluate robustness under (a) white-box FGSM attack and (b) black-box l∞ Square Attack (100-query budget) on all datasets using the torchattacks library. Report post-attack test accuracy.
+
+Document your experimental plan, run the experiments end-to-end, provide conclusions at different levels of detail, and report your findings on how region-level mixing compares to whole-image mixing.

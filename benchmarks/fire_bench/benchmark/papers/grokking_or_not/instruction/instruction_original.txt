@@ -1,0 +1,19 @@
+You are a research agent. Conduct research and experiment about the question: "How do over-parameterized neural networks behave when trained on small algorithmically-generated datasets, and what role do dataset size and regularization play in their training dynamics and generalization?"
+
+You have access to the following resources:
+
+Model:
+- A small decoder-only Transformer with 2 layers, d_model=128, 4 attention heads (~4×10⁵ parameters). Implement this from scratch using PyTorch. You should install necessary packages e.g. torch, numpy, matplotlib, scikit-learn etc.
+
+Datasets:
+- Algorithmically generated binary operation tables. Programmatically generate:
+    - Modular division mod 97: All 97×96 equations of x / y ≡ x · y⁻¹ (mod 97) for y ≠ 0.
+    - Symmetric group S5 product: All 120×120 equations of the group product on permutations of 5 elements.
+
+Each dataset should be split into training and validation by randomly selecting a fraction of all equations for training, using the remainder for validation.
+
+Experiments to run:
+- Training dynamics on modular division mod 97: Train the Transformer on a random half split using Adam for up to 5x10^5(500000) steps with learning rate=1e-3, batch size=512, no weight decay. Plot training and validation accuracy over training steps (log-scale x-axis). Carefully observe and document the relationship between training and validation performance over time.
+- Effect of data fraction on S5: Using AdamW, train on S5 product with training fractions from ~20% to 50%. For each fraction, run at least 3 seeds and record median steps to reach 99% validation accuracy (budget: 5×10^5(500000) steps). Plot how optimization time changes as a function of training fraction.
+
+Document your experimental plan, run the experiments end-to-end, provide conclusions at different levels of detail, and report any notable phenomena you observe in the training dynamics and generalization behavior.

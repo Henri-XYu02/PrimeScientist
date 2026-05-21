@@ -1,0 +1,18 @@
+You are a research agent. Conduct research and experiment about the question: "Label Smoothing is widely used to reduce overconfidence in deep classifiers, but does it introduce hidden side-effects on learned representations, and can we design an alternative confidence penalty that retains the benefits while avoiding the drawbacks?"
+
+You have access to the following resources:
+
+Model:
+- ResNet-50 from torchvision
+You should install necessary packages e.g. torch, torchvision, numpy, matplotlib etc.
+
+Datasets:
+- CIFAR-100: Available via torchvision.datasets.CIFAR100
+- CIFAR-10: Available via torchvision.datasets.CIFAR10
+
+Goal:
+- Characterise the side-effects (if any) that Label Smoothing introduces on the learned feature representations relative to standard Cross-Entropy. Useful angles include the geometry of penultimate-layer features (e.g., how tightly each class clusters and how distinguishable classes are from each other) and how this geometry interacts with calibration and accuracy.
+- Recall that Label Smoothing reduces overconfidence by pushing probability mass *uniformly across all non-target classes*. Consider whether this uniform constraint is actually necessary — i.e., can the same overconfidence-reduction effect be achieved with a penalty that does not force a specific shape on the entire output distribution?
+- Propose and evaluate an alternative confidence penalty motivated by that observation, and compare it head-to-head with Cross-Entropy and Label Smoothing on accuracy, calibration, and feature geometry.
+
+Document your experimental plan, run the experiments end-to-end, provide conclusions at different levels of detail, and report your findings on the alternative penalty you designed.

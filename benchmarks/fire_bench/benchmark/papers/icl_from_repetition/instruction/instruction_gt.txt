@@ -1,0 +1,298 @@
+You are a research agent. Conduct research and experiment about the question: "What is the underlying mechanism of in-context learning (ICL) in Large Language Models (LLMs), and how do surface repetitions, particularly token co-occurrence reinforcement, influence ICL, including both its beneficial functions and detrimental effects?"
+
+You have access to the following resources:
+
+Models:
+- GPT-4o, GPT-4o-mini
+- Load with HuggingFace: meta-llama/Llama-2-7b-hf
+- You can call these models using: from utils.llm_inference import LLMInference
+- API key is provided with the LLMInference initialization function
+- You can use the batch_generate() function to speed up the experiment
+- Computational budget: 1000 API calls per model
+
+Datasets:
+- GSM8K (grade school math word problems):
+You can use the following code to load the dataset:
+```python
+from datasets import load_dataset
+ds = load_dataset("openai/gsm8k", "main")
+```
+
+Please design and execute experiments to investigate this research question. Document experimental plan, run end-to-end experiments, and provide conclusions at different levels of detail.
+
+---
+
+## Experimental Design
+
+1) Sentence Self-Reinforcement (Fig. 2, left)
+- Procedure:
+  - Prompt: repeat the sentence “Answer is A” N times, then append the partial “Answer is ” and score the next-token distribution. Context template:
+    - For N repeats: “Answer is A\n” repeated N times, then “Answer is ”
+  - N ∈ {0, 1, 2, …, 19}.
+  - For each N, record P(next token = “A”) at the position immediately following the space after “Answer is ”.
+  - Run 3 random seeds (only affects any random prefixes if used; see Implementation Notes).
+- What to record:
+  - For each N: the probability P(A), raw logits, softmax distribution over the vocabulary, and the complete prompt.
+- Correspondence: Section 2; Fig. 2 (left).
+
+2) Sentence-Level Reinforcement Across Corpora (Fig. 2, right)
+- Procedure:
+  - Build three 1,000-sentence sets:
+    - Wikitext-like: sample 1,000 sentences from a Wikipedia-derived corpus [uncertain] and detokenize if needed.
+    - BookCorpus-like: sample 1,000 sentences [uncertain] and detokenize if needed.
+    - Random: create 1,000 random token sequences; each sequence length uniformly from 5–10 tokens; tokens uniformly sampled from the tokenizer vocab excluding special tokens.
+  - For each sentence s, repeat s in the prompt N=10 times, then score the average per-token probability of reproducing s again:
+    - Compute TPN = (1/Ls) ∑i PREP(w = wi | n = N) at the next positions with teacher forcing.
+  - Aggregate the mean TPN across the 1,000 sentences per corpus.
+  - 3 random seeds.
+- What to record:
+  - Per-sentence TPN, corpus-level mean and std, prompts, and tokenizations.
+- Correspondence: Section 2; Fig. 2 (right).
+
+3) Token Co-Occurrence Reinforcement vs. #Kept Tokens (Fig. 3)
+- Procedure:
+  - Dataset: 1,000 random token sequences (length 5–10).
+  - For each sentence s = (w1..wLs), randomly choose a mask m with exactly Lt kept tokens (Lt ∈ {1, 2, 3, 4}); for positions where m=0, replace tokens with independent uniform random vocab tokens (excluding specials).
+  - Build K=20 demonstrations by concatenating the perturbed sentence; prepend the same random prefix to all repeats (see Implementation Notes).
+  - Target metric: ˆTPN = (1/Lt) ∑ kept positions PREP(w = wi | n = N).
+  - Plot ˆTPN vs N (N=0..20) for Lt ∈ {1,2,3,4}. 3 seeds.
+- What to record:
+  - ˆTPN per N, per Lt, per seed; prompts; masks; raw token-level probs for kept positions.
+- Correspondence: Section 3.1; Fig. 3 (panels A–D).
+
+4) Successive vs. Distant Reinforcement (Fig. 4)
+- Procedure:
+  - Dataset: 1,000 random token sequences (length ≥ 6).
+  - Keep exactly two tokens X, Y from the original sentence and randomize the rest.
+  - Distances d ∈ {0, 1, 2, 3} mean the number of tokens strictly between X and Y in the original sentence.
+  - Construct 20 repeats and compute ˆTPN over the two kept positions; plot vs N for each d.
+  - 3 seeds.
+- What to record:
+  - ˆTPN per N and distance; prompts; positions of X, Y; raw token-level probs for both kept tokens; masks.
+- Correspondence: Section 3.1; Fig. 4 (A–D).
+
+5) Phrase Co-Occurrence Reinforcement (Fig. 10)
+- Procedure:
+  - Dataset: 1,000 random token sequences (length ≥ 8).
+  - Keep a trailing phrase of length Lp ∈ {2, 3, 4, 5} intact; randomize all earlier tokens.
+  - As in (3), repeat 20 times; compute ˆTPN restricted to the Lp kept positions.
+  - Report curves for each Lp; 3 seeds.
+- What to record:
+  - ˆTPN per N and Lp; prompts; masks; raw kept-token probabilities.
+- Correspondence: Appendix D.1; Fig. 10 (A–D).
+
+6) Improved Ratio of Token Reinforcement (IR) (Fig. 16)
+- Procedure:
+  - Using the setup of (4) with exactly two kept tokens (any distance ≥ 1), compute IR(N) = fraction of sentences with ˆTPN(N) > ˆTP0.
+  - N=0..20; 3 seeds.
+- What to record:
+  - IR per N; underlying ˆTPN and ˆTP0 arrays; prompts; masks.
+- Correspondence: Appendix D.6; Fig. 16 (A–C).
+
+7) Semantic Relationships in Reinforcement (Fig. 15)
+- Procedure:
+  - Build three 1,000-pair sets of kept-token pairs (X, Y):
+    - Random: X ≠ Y uniformly sampled from vocab (exclude specials).
+    - Same: X = Y (select uniformly; duplicate the same token).
+    - Neighbor: for each X, select Y as the nearest neighbor by cosine similarity in the model’s input embedding matrix, excluding X.
+  - For each pair, construct a sentence ensuring X and Y are adjacent (distance=0) or at fixed distance=1; randomize remaining tokens; 20 repeats; compute ˆTPN over the two kept tokens.
+  - 3 seeds.
+- What to record:
+  - ˆTPN per N across relationship types; prompts; chosen pairs and cosine similarities; raw probs.
+- Correspondence: Appendix D.5; Fig. 15.
+
+8) Multiple-Choice Label-Space Constraining (Fig. 6)
+- Procedure:
+  - Build an MMLU-style balanced evaluation set: randomly sample 20 questions per subject [uncertain]; pool into a test set of size 1,140; enforce global balance across gold labels A/B/C/D by subsampling or oversampling with replacement if necessary.
+  - For each test query, sample K ∈ {0,1,2,3,4,5} demonstrations from the same subject without overlap and randomly order them.
+  - Baseline masked demos:
+    - In each demonstration, keep only: option names (e.g., “A.”, “B.”, …), the answer indicator token (“Answer:”), and the final answer letter (e.g., “D”); mask question content and all option contents by replacing their tokenized spans with random tokens of the same token length.
+  - Ablations (replace within demonstrations; test query remains unmodified):
+    - Replace Option Names: uniformly at random choose one set from:
+      - {I.; II.; III.; IV.}, {E.; F.; G.; H.}, {1.; 2.; 3.; 4.}, {(a).; (b).; (c).; (d).}
+    - Replace Answer Indicator: replace “Answer:” with one of {“Solution”, “Reply”, “Response”, “Result”, “Choice”}.
+    - Also run the baseline masked-only condition.
+  - For each K and condition, compute the probability mass assigned to label space {A,B,C,D} at the first answer token (see Evaluation).
+  - 3 seeds.
+- What to record:
+  - For each test item: prompt, per-label next-token probabilities, sum over label space, and the condition flags.
+- Correspondence: Section 4.1; Fig. 6.
+
+9) Pattern Following in Math Reasoning (Fig. 7; Appendix E.1; Fig. 17)
+- Procedure:
+  - Format each demonstration: “Question: [Question] // Let’s think step by step. // [CoT Answer]”
+  - Build few-shot prompts with K ∈ {0..5} demonstrations drawn from the training split (exclude the test item).
+  - Conditions (mask within demonstrations only; test query remains original):
+    - ICL baseline: no masking.
+    - + Mask [Question]: replace the question span with random tokens of the same token length.
+    - + Mask [CoT Answer]: replace the CoT answer span with random tokens of the same length (keep the phrase “Let’s think step by step.” intact).
+    - + Mask //: replace the delimiter “ // ” (including leading/trailing spaces) with random tokens of the same token length.
+  - Metrics:
+    - Probability of the CoT pattern: probability of the first token of “Let’s think step by step.” at its starting position in the test query continuation.
+    - Appendix-style: (a) joint probability (per-token product) of the entire phrase “Let’s think step by step.”; (b) probability of the first token of the subsequent CoT answer span (the first token immediately following the phrase and delimiter).
+  - 3 seeds.
+- What to record:
+  - Prompt, next-token probability at the CoT-phrase start, optional joint log-probability of the full phrase, and the probability of the first token of the CoT answer.
+- Correspondence: Section 4.1; Fig. 7 (main). Appendix E.1; Fig. 17 (both panels).
+
+10) Non-Informative Connections (NC) (Table 1, top)
+- Procedure:
+  - Balanced MMLU-style test set as in (8).
+  - For each test query, build K ∈ {0..5} demonstrations (same-subject; random order).
+  - In every demonstration whose gold answer is D, append one of the phrases right before the answer indicator (randomly pick per demo):
+    - “Please kindly provide your answer.”
+    - “Looking forward to your choice.”
+  - In the test query block, append the same type of phrase in the same location (right before the answer indicator).
+  - Prediction rule: choose argmax over P({A,B,C,D}) at the first answer token.
+  - Report two metrics per K:
+    - “Avg. [A,B,C]”: average accuracy over items with gold ∈ {A,B,C}.
+    - “D”: accuracy over items with gold = D.
+  - Also run the ICL baseline without NC for comparison.
+  - 3 seeds.
+- What to record:
+  - Per-item prompt, predicted label, per-label probabilities, gold, and whether NC was injected.
+- Correspondence: Section 4.2; Table 1 (top).
+
+11) Reordered Answers (RA) (Table 1, bottom)
+- Procedure:
+  - Same test set and K as (10).
+  - For each test query’s K-shot demonstrations, independently with probability r ∈ {0.50, 0.75, 1.00}:
+    - Change the final answer letter to “D”.
+    - Swap the option contents between the original gold label and “D” within that demonstration so the demonstration remains semantically correct.
+  - No changes to the test query block (no phrase injection; standard format).
+  - Prediction rule: argmax over P({A,B,C,D}) at the first answer token.
+  - Report the same per-K metrics as (10), for each r.
+  - 3 seeds.
+- What to record:
+  - As in (10), plus which demos were altered and the swap mapping per demo.
+- Correspondence: Section 4.2; Table 1 (bottom).
+
+12) Selection Bias per Class (Appendix E.2; Table 4)
+- Procedure:
+  - Using the balanced MMLU-style set, run K ∈ {0..5} with standard ICL (no NC/RA).
+  - Report per-class accuracies (A, B, C, D) and overall mean.
+  - 3 seeds.
+- What to record:
+  - Per-item predictions and per-class aggregates.
+- Correspondence: Appendix E.2; Table 4.
+
+13) Optional: Word Recurrence in Pretraining Corpus (Fig. 5) [uncertain]
+- Procedure:
+  - Tokenize a Wikipedia snapshot with the same tokenizer, split into sliding windows of length T=1024.
+  - For each token type w and each position i, compute Count(w, w<i) and accumulate indicator of wi = w to estimate Pn over n ≥ 0:
+    - Pn = E_w [∑_i 1{wi = w | Count(w, w<i) = n}] normalized by the number of events with Count = n.
+  - Plot Pn vs n.
+- What to record:
+  - Counts per n, normalization constants, and Pn; corpus size and preprocessing details.
+- Correspondence: Section 3.2; Fig. 5.
+
+14) Optional: Attention Mask Ablation (Appendix C; Fig. 9) [uncertain]
+- Procedure:
+  - Repeat the successive (distance=0) and distant (distance=1) setups from (4).
+  - Modify the attention mask at inference to zero out attention from position t to t−1 while retaining the standard causal mask (requires model-level control).
+  - Compare ˆTPN vs N with and without the ablation.
+- What to record:
+  - ˆTPN curves, attention-mask configuration, and prompts.
+- Correspondence: Appendix C; Fig. 9.
+
+
+## Evaluation Details
+
+- Token-level probability under repetition:
+  - PREP(w) := M(w | [s1; s2; …; sn−1; w1..wi−1]) where s is the repeated (possibly perturbed) sentence and wi the i-th token of s.
+  - Average token probability for a set of kept positions K:
+    - ˆTPN = (1/|K|) ∑_{i∈K} softmax(logits_i)[id(wi)] at the step predicting wi.
+  - Improved ratio (IR):
+    - IR(N) = mean over sentences of 1{ˆTPN > ˆTP0}.
+- Label-space probability (Fig. 6):
+  - At the position immediately following “Answer:” and a single space, compute the next-token softmax p.
+  - Construct the set of token ids corresponding to the strings: “A”, “B”, “C”, “D”, with and without a leading space, and with a trailing period optionally split by BPE (e.g., “A”, “ A”, “A.” tokenized pieces). Let S be the union for each letter.
+  - Probability mass on label space: P_label = ∑_{ℓ∈{A,B,C,D}} ∑_{t∈S(ℓ)} p[t].
+  - For prediction (accuracy): for each letter ℓ, compute P(ℓ) = ∑_{t∈S(ℓ)} p[t]; choose argmaxℓ P(ℓ).
+  - Edge cases:
+    - If the tokenizer merges whitespace with the letter, include both spaced and unspaced variants.
+    - If punctuation is generated as a separate token, do not condition on it for the first-step decision.
+- Pattern probability (Fig. 7 and Appendix E.1):
+  - Probability of the CoT pattern = probability of the first token of “Let’s think step by step.” at the exact position where the phrase should begin (immediately after “ // ” and a single space).
+  - Optional joint phrase probability: given the phrase tokenization u1..uL, compute P_phrase = ∏_{j=1..L} softmax(logits at position j)[id(uj)]; report log P_phrase to avoid underflow. For plotting on [0,1], report exp(mean per-token log-prob) or the probability of the first token as the main metric (to match Fig. 7 scale).
+  - Probability of first token of CoT answer (Appendix E.1): after the CoT phrase and delimiter, compute the next-token probability for the first token of the gold CoT answer span (before masking).
+- Accuracy metrics (Table 1; Table 4):
+  - Per-item accuracy = 1{predicted letter equals gold letter}.
+  - “Avg. [A,B,C]” = mean accuracy over all items whose gold ∈ {A,B,C}.
+  - “D” = mean accuracy over items with gold = D.
+  - Overall accuracy = mean over all items.
+- Aggregation:
+  - For curves vs N or K: compute mean and standard deviation over (i) the item set and (ii) 3 random seeds. In plots, report the mean over seeds; shaded area = std over seeds.
+  - For significance tests (Table 1): paired t-test between condition and baseline over 5 random folds of the test set; p<0.05 considered significant. Use scipy.stats.ttest_rel on fold-wise accuracies.
+- Normalization and preprocessing of outputs:
+  - For free-form generations (if produced for sanity checks), extract the answer letter by regex matching the first occurrence of one of:
+    - r’\b([ABCD])\b’, r’\b([ABCD])\.’, r’[Cc]hoice\s*([ABCD])’, r’[Oo]ption\s*([ABCD])’, r’\(([ABCD])\)’
+  - Strip quotes and Unicode punctuation variants; uppercase the captured letter.
+  - If no match, fall back to argmax over label-space probabilities.
+
+## Implementation Notes
+
+- Random substitution (masking):
+  - Always operate in token space:
+    - Tokenize the span to be masked; sample the same number of token ids uniformly from the model vocabulary excluding specials; replace in place.
+  - This preserves length and avoids confounds from varying context lengths.
+- Random prefixes in repetition experiments:
+  - Prepend the same random-prefix token sequence (length 3–8 tokens) to each repeated sentence within a trial to prevent trivial sentence-boundary cues creating a single long sequence; change the prefix across trials and seeds.
+- Distance control for kept tokens:
+  - Choose positions i and j such that j = i + d + 1 for distance d; ensure sentence length supports the constraint; re-sample if needed. Keep tokens at i and j; randomize all others.
+- Phrase positioning:
+  - For phrase-length experiments, place the kept phrase as the last Lp tokens of the sentence. When constructing repeats, ensure the repeated block ends with the phrase to test successive reinforcement.
+- Demonstration formatting (MMLU-style):
+  - For each demonstration:
+    - [Question text]\n
+    - A. [Option A]\n
+    - B. [Option B]\n
+    - C. [Option C]\n
+    - D. [Option D]\n
+    - Answer: [Letter]\n
+  - Separate demonstrations with a single blank line. The test query block mirrors the format but omits the answer letter (only “Answer: ”).
+- Option-name replacement:
+  - When “Replace Option Names” is active, select one entire mapping set per demonstration (e.g., I./II./III./IV.) and replace all four option names consistently inside that demonstration. Do not alter the test query block’s option names (remain A./B./C./D.).
+- Answer-indicator replacement:
+  - Replace the literal “Answer:” token in demonstrations with one randomly chosen synonym per demonstration; retain “Answer:” in the test query block.
+- NC injection:
+  - Insert the phrase immediately before the answer indicator with a trailing space, e.g.,
+    - “…\nPlease kindly provide your answer. Answer: D”
+  - Only demonstrations with gold = D receive the phrase; the test query block always includes the phrase to “probe” the learned connection.
+- RA construction:
+  - For each affected demonstration:
+    - Let gold = G (e.g., B). Swap the full option contents of label G and label D; then set the final line to “Answer: D”. This preserves demonstration correctness post-swap.
+  - Keep the question text unchanged.
+- Few-shot math reasoning formatting:
+  - Demonstration:
+    - “Question: {question_text} // Let’s think step by step. // {cot_answer}\n”
+  - Test query:
+    - “Question: {question_text} // ”
+    - Use this exact delimiter: a space, two slashes, a space (“ // ”). The CoT phrase must start immediately after this delimiter when unmasked.
+  - Mask conditions:
+    - + Mask [Question]: replace tokenized question_text.
+    - + Mask [CoT Answer]: replace tokenized cot_answer (not the phrase).
+    - + Mask //: replace the 3-token delimiter region with random tokens of the same length (ensure it no longer matches “ // ”).
+- Order of operations:
+  - For all MMLU-style experiments, build the balanced test set first; then:
+    1) Run baseline ICL (no NC/RA).
+    2) Apply NC; evaluate.
+    3) Apply RA at r=50%, 75%, 100%; evaluate.
+  - For pattern-following, evaluate baseline before applying any mask; then progressively add masks in the order: +Mask [Question], +Mask [CoT Answer], +Mask //.
+- Decoding and scoring:
+  - Do not sample during evaluation (temperature=0, top_p=1, greedy) if you need to render outputs; for probability-based metrics, use the raw logits at the relevant positions without decoding.
+- Seeding:
+  - Set seeds for Python, NumPy, and the ML framework. Use different seeds to:
+    - Select demonstrations,
+    - Choose masking tokens,
+    - Choose replacement pools (option names/answer indicators),
+    - Choose RA-affected demonstrations.
+- Significance testing:
+  - Split the evaluation items into 5 random equal folds; compute per-fold accuracies for baseline vs. each condition; apply a paired t-test (two-sided) and report p-values. Mark significant improvements/degradations at p<0.05.
+- Pitfalls:
+  - Tokenization alignment: ensure the scoring position for the first answer token is exactly after “Answer: ” (note the trailing space).
+  - Variant tokens: include both whitespace-prepended and non-prepended variants when mapping letters to token ids; BPEs may split punctuation (e.g., “A” vs “A.”).
+  - Mask “ // ” carefully: the exact three-token region (space, “//” token(s), space) may be one or multiple tokens depending on the tokenizer; always replace with the same number of tokens.
+  - Balanced sets: enforce equal counts across A/B/C/D to avoid confounding selection bias.
+- Resource-intensive/optional components:
+  - Pretraining-corpus Pn estimation and attention-mask ablation require additional data/control and are marked [uncertain]. Include only if toolchain allows tokenizer-level corpus iteration and model-level attention mask manipulation.

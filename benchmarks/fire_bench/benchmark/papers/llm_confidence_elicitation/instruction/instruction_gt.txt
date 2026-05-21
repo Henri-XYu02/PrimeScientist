@@ -1,0 +1,306 @@
+You are a research agent. Conduct research and experiment about the question: "Can large language models (LLMs) accurately express their uncertainty through black-box approaches, and how effective are various strategies (prompting, sampling, aggregation) for eliciting such confidence in tasks like calibration and failure prediction across different datasets and models?"
+
+You have access to the following resources:
+
+Models:
+- gpt-3.5-turbo and gpt-4 via the provided inference utilities
+- Load with HuggingFace: meta-llama/Llama-2-13b-chat-hf
+- You can call these models using: from utils.llm_inference import LLMInference
+- API key is provided with the LLMInference initialization function
+- You can use the batch_generate() function to speed up the experiment
+- Computational budget: 1000 API calls per model
+
+Datasets:
+
+Please design and execute experiments to investigate this research question. Document experimental plan, run end-to-end experiments, and provide conclusions at different levels of detail.
+
+---
+
+## Experimental Design
+
+1) Vanilla verbalized confidence baseline
+- Procedure:
+  - Datasets: GSM8K, SVAMP, Date Understanding (BigBench), Object Counting (BigBench), StrategyQA (BigBench), Sports Understanding (BigBench), Professional Law (MMLU), Business Ethics (MMLU).
+  - For each sample, send a single query (no prior turns) using the task-appropriate vanilla prompt (Table 14 in paper):
+    - Multi-choice version:
+      - Read the question, provide your answer and your confidence in this answer. Note: The confidence indicates how likely you think your answer is true.
+      - Use the following format to answer: "Answer and Confidence (0-100): [ONLY the option letter; not a complete sentence], [Your confidence level, please only include the numerical number in the range of 0-100]%"
+      - Only the answer and confidence, don’t give me the explanation.
+      - Question: [Specific Question Here]
+      - Now, please answer this question and provide your confidence level.
+    - Open-number version:
+      - Same wording, but the format line becomes: "Answer and Confidence (0-100): [ONLY the number; not a complete sentence], [Your confidence level, please only include the numerical number in the range of 0-100]%"
+  - Temperature: [uncertain] (use 0.2 for stability unless otherwise required).
+  - Sample size: full test/validation split where available; if not feasible, subsample [uncertain] uniformly at random (recommend 500 examples per dataset per model).
+- What to record:
+  - Raw model text; parsed answer; parsed confidence; ground-truth label/answer; correctness (1/0).
+  - For GSM8K and other rationale-producing datasets in later tasks, keep the extracted final numeric answer only here.
+  - For visualization: per-sample confidence values for histogram (bin at 5% increments) and reliability diagram inputs.
+- Correspondence: Table 2 (metrics across datasets/models); Figure 2 (confidence distribution + reliability diagram); Appendix Figure 5 (extended distributions).
+
+2) Prompting strategies comparison (CoT, Self-Probing, Multi-Step, Top-K) vs vanilla
+- Procedure:
+  - For each dataset and model, run:
+    - CoT (Table 15):
+      - Multi-choice version and open-number version, as specified. Ensure the final line follows "Answer and Confidence (0-100): ..., ...%". Use "Let’s think it step by step."
+    - Self-Probing (Table 16):
+      - Phase A: Generate a candidate answer with the vanilla multi-choice/open-number prompt (no confidence needed; you may still accept confidence but ignore it).
+      - Phase B: Prompt with:
+        - Question: [The specific question]
+        - Possible Answer: [Phase A answer only]
+        - Q: How likely is the above answer to be correct? Please first show your reasoning concisely and then answer with the following format: "Confidence: [the probability of answer {answer} to be correct, not the one you think correct, please only include the numerical number]"
+      - Use the Phase A answer as the prediction and Phase B Confidence as the confidence.
+    - Multi-Step (Table 17):
+      - Ask the model to break down into K steps (K chosen by the model) and output per-step confidences:
+        - "Step i: [Your reasoning], Confidence: [ONLY the confidence value that this step is correct]%"
+        - Final Answer and Overall Confidence (0-100): [ONLY the answer type; not a complete sentence], [Your confidence value]%
+      - Also compute an alternative overall confidence = product of per-step confidences (converted to [0,1]) then mapped to [0,100] for evaluation; record both the stated overall confidence and the product version.
+    - Top-K (Table 18):
+      - "Provide your k best guesses and the probability that each is correct (0% to 100%) ..." with strict Gi/Pi format.
+      - K = [uncertain] (use K=5 by default). For evaluation in this task, take G1 as the predicted answer and P1 as the confidence (this matches Table 10’s setting of Top-K verbalized confidence at M=1).
+  - Temperature: 0.2 for single-shot runs (except Top-K may use 0.2 to keep ordering stable).
+  - Sample size: as in Task 1.
+- What to record:
+  - Raw outputs; extracted prediction; confidence(s); additional fields:
+    - Self-Probing: Phase A raw, Phase B raw, and the mapping between them.
+    - Multi-Step: all step confidences; stated overall confidence; product-of-steps overall confidence.
+    - Top-K: all Gi, Pi lines; note if duplicate guesses appear.
+- Correspondence: Figure 3 (ECE/AUROC across strategies); Tables 8–10 (detailed per-strategy results).
+
+3) Sampling strategy study (M=5) with consistency aggregation
+- Procedure:
+  - Fix CoT prompting for generation of single answers (for M=1 baseline) and for sampling-based runs when relevant, unless otherwise specified below.
+  - Compare four settings:
+    - Baselines (M=1): CoT (as above), and Top-K (M=1, prediction = G1, confidence = P1).
+    - Self-Random (M=5): Query the same prompt M times independently; temperature = 0.7 (as in §E.4).
+    - Misleading (M=5): For each of M queries, prepend one misleading hint (randomly sampled from Table 11; balance between Weak Claim / Strong Claim / External Source across the M queries if possible). The hint template: "Hint: [one of the Table 11 lines] [insert a candidate misleading value]". Candidate misleading value generation rules:
+      - Multi-choice: uniformly random letter among the provided options.
+      - Yes/No: uniformly random among {"Yes", "No"}.
+      - Open-number: random integer sampled from a problem-dependent plausible range [uncertain] (default 1–1000 for GSM8K; tune per dataset if prior knowledge is available).
+      - Date: a random valid date in a plausible year range [uncertain] or a random day-of-week token for day-of-week questions.
+    - Prompting (M=5): Paraphrase sampling via five semantically-preserving rewrites of the question; for each paraphrase, run the same (non-misleading) prompt. Paraphrase template:
+      - "Rewrite the following question into a different wording while preserving all original meaning, quantities, and options. Keep the answer space identical. Only output the rewritten question. Question: [original]". Temperature = 0.7; deduplicate paraphrases.
+  - For all M>1 settings, aggregate with Consistency (Eq. 1).
+  - Use the same base prompt you are sampling (e.g., CoT) across M; be explicit that the answer to aggregate is the "final answer" slot from each response.
+- What to record:
+  - All M raw generations, their parsed answers and confidences; the unique answer set; consistency values per candidate; final aggregated answer and confidence.
+- Correspondence: Table 3 (ECE/AUROC with M=5; baseline M=1 included).
+
+4) Scaling number of responses M
+- Procedure:
+  - Use the Misleading sampling strategy from Task 3 with CoT prompting.
+  - Evaluate M in {1, 3, 5, 7, 9, 11, 13}.
+  - For each M, repeat with 5 random seeds (different random hints); report mean and variance (error bars) for ECE and AUROC.
+  - Aggregation: Consistency (Eq. 1).
+- What to record:
+  - Per M, per seed: metrics; store the specific hint set used.
+- Correspondence: Figure 7.
+
+5) Aggregation strategies comparison with Top-K prompting + Self-Random sampling
+- Procedure:
+  - For each sample:
+    - Run N=M=5 independent generations of the Top-K prompt (Table 18), each returning an ordered list of K guesses with probabilities (K=[uncertain], default 5).
+    - From these N responses, build the unique answer set A.
+  - Compute three aggregations to produce a final answer and a confidence:
+    - Consistency (Eq. 1) using only top-1 guess from each response (i.e., compare ˆYi= top-1 Gi against each candidate).
+    - Avg-Conf (Eq. 2): use the provided Pi as Ci for each response; indicator equals 1 iff the top-1 guess equals the candidate under comparison; normalize as in Eq. 2.
+    - Pair-Rank (Eq. 4): use the per-response top-K rank ordering to fit P over A; details in Evaluation Details.
+  - Choose the candidate with the highest aggregated confidence as the final answer; report that confidence.
+- What to record:
+  - All N generations (Gi/Pi lists), pairwise order data, final P estimates, final prediction, and confidence per aggregator.
+- Correspondence: Table 4.
+
+6) Role-play prompt sensitivity (CoT)
+- Procedure:
+  - Two variants of CoT prompt (Table 15) with a single sentence inserted at the very beginning:
+    - "You are a confident GPT."
+    - "You are a cautious GPT."
+  - Keep all other instructions identical to CoT; single-shot runs (M=1), temperature 0.2.
+  - Evaluate on at least one BigBench dataset used in the paper’s figure (Object Counting preferred), and optionally extend to other datasets.
+- What to record:
+  - Confidence histograms; accuracy, ECE, AUROC; sample-level outputs.
+- Correspondence: Figure 4 (distributions); Table 7 (metric comparison).
+
+7) Misleading hint group comparison
+- Procedure:
+  - Use StrategyQA.
+  - Misleading sampling with M=[uncertain] (use 5).
+  - Run three groups of hint phrasings (Table 11):
+    - Weak Claim
+    - Strong Claim
+    - External Source
+  - Evaluate two aggregations:
+    - Induced Consistency Confidence = Consistency (Eq. 1).
+    - Verbalized-consistency confidence = Avg-Conf (Eq. 2).
+- What to record:
+  - Metrics per group and per aggregation; raw M outputs and hints.
+- Correspondence: Table 12.
+
+8) White-box vs black-box comparison [optional; requires token probability access]
+- Procedure:
+  - For models exposing per-token probabilities, compute:
+    - seq-prob: product of output token probabilities (or sum of log-probs).
+    - len-norm-prob: (seq-prob)^(1/length) (or mean log-prob).
+    - token-prob: probability of key answer token(s) only (e.g., the numeric answer or the option letter).
+  - Compare these as confidence scores against:
+    - Verbalized confidence with Top-K (M=1; prediction=G1, confidence=P1).
+    - Verbalized confidence with CoT (M=1).
+- What to record:
+  - Raw log-probs, the chosen token spans for token-prob, computed scalar confidences per sample.
+- Correspondence: Tables 5 and 6.
+
+9) Comprehensive method comparison
+- Procedure:
+  - For each dataset, compute metrics for:
+    - Top-K (M=1)
+    - CoT (M=1)
+    - Self-Random + Consistency (M=5)
+    - Misleading + Consistency (M=5)
+    - Self-Random + Avg-Conf (M=5)
+    - Misleading + Avg-Conf (M=5)
+- What to record:
+  - Per-method metrics; per-sample predictions and confidences.
+- Correspondence: Table 13.
+
+10) Distribution visualizations across models and datasets (vanilla)
+- Procedure:
+  - Using Task 1 runs, produce:
+    - Histograms of confidence values with 5% bins.
+    - Reliability diagrams (bin-wise mean confidence vs empirical accuracy).
+- What to record:
+  - Underlying binned statistics used to plot.
+- Correspondence: Appendix Figure 5.
+
+
+## Evaluation Details
+
+- Answer normalization and equivalence:
+  - Multi-choice (MMLU subsets): extract a single uppercase letter among provided options (A–E depending on dataset; most are A–D). Normalize by stripping spaces, punctuation, and surrounding text.
+  - Yes/No (StrategyQA): accept case-insensitive variants {"yes","no"}. Map to canonical {"yes","no"}.
+  - Open-number (GSM8K, SVAMP): extract the first signed/unsigned number token; accept integers or decimals; strip commas; for equality, compare as floats with absolute tolerance 1e-6. If multiple numbers appear, prefer the one immediately after "Answer" or the last number in the line containing "Answer and Confidence".
+  - Dates (DateUnd): parse using a robust date parser (e.g., python-dateutil). Normalize to YYYY-MM-DD; handle day-of-week by mapping common names/abbreviations to canonical form.
+  - Object Counting: integer comparison as above.
+  - If no parseable answer, mark the sample as invalid; retry once with a repair prompt requesting strictly the specified format; if still invalid, drop the sample and log.
+
+- Confidence extraction and normalization:
+  - Vanilla/CoT: parse the numeric value after the final "Answer and Confidence (0-100):" line; strip "%"; clamp to [0,100]; divide by 100 to get [0,1] for scoring.
+  - Self-Probing: parse "Confidence: [number]" (no "%"); clamp [0,100]; divide by 100.
+  - Multi-Step:
+    - Stated overall confidence: parse final line; [0,100] → [0,1].
+    - Product-of-steps confidence: multiply per-step confidences (each parsed as % and converted to [0,1]); final ∏ Ci ∈ [0,1].
+    - Report both; by default, use the product version for calibration/failure-prediction unless otherwise specified.
+  - Top-K:
+    - Parse each Gi and Pi; clamp Pi ∈ [0,100]; divide by 100.
+    - For Task 2 and Table 10, use (G1, P1) as (prediction, confidence).
+  - Missing confidence: If the required confidence token is missing, retry once with a repair prompt requesting only the confidence in the specified format; otherwise discard and log.
+
+- Consistency aggregation (Eq. 1):
+  - Given M responses, define the set of unique normalized answers A.
+  - For each a ∈ A: Cconsistency(a) = (1/M) Σ_i I{Yi == a}.
+  - Final answer â = argmax_a Cconsistency(a). Confidence for â is Cconsistency(â).
+  - Ties: break by choosing the candidate with higher average verbalized confidence among tied answers; if still tied, choose lexicographically smallest.
+
+- Avg-Conf aggregation (Eq. 2):
+  - Convert each response’s confidence Ci to [0,1].
+  - For each a ∈ A:
+    - Numerator = Σ_i I{Yi == a} × Ci.
+    - Denominator = Σ_i Ci + ε, with ε=1e-8 to avoid divide-by-zero.
+    - Cavg-conf(a) = Numerator / Denominator.
+  - Final â = argmax_a Cavg-conf(a); report Cavg-conf(â).
+
+- Pair-Rank aggregation (Eq. 4; Bradley–Terry-style optimization):
+  - Inputs: N independent Top-K generations S(i) = (S(i)_1, ..., S(i)_K), i=1..N.
+  - Build A = unique normalized answers across all S(i).
+  - For each ordered pair (u,v) ∈ A×A, u≠v, and each i:
+    - If at least one of {u,v} appears in S(i), define I_i[u ≻ v] = 1 if u appears before v in S(i), else 0 (if only one appears, the other is treated as appearing after the observed one).
+  - Parameterization: logits θ_u ∈ R for each u ∈ A; define P(u) = softmax(θ)_u.
+  - Loss (to minimize): L(θ) = − Σ_i Σ_{u≠v} I_i[u ≻ v] · log( P(u) / (P(u)+P(v)) ).
+  - Optimization:
+    - Initialize θ_u = 0 for all u.
+    - Use gradient descent/Adam (lr=0.1), 1000 steps or until |ΔL| < 1e-6. Add L2 regularization λ||θ||^2 with λ=1e-4 to stabilize [uncertain].
+  - Output: P(u) for all u; final â = argmax_u P(u); confidence = P(â).
+  - Numerical stability: compute log P(u)/(P(u)+P(v)) via logsumexp on (θ_u, θ_v).
+
+- Expected Calibration Error (ECE):
+  - Let B be the number of confidence bins [uncertain] (use B=10 as default). Define bins I_b = ( (b−1)/B, b/B ] for b=1..B.
+  - For each bin b, let S_b be samples with confidence in I_b; acc(b) = mean correctness over S_b; conf(b) = mean confidence over S_b.
+  - ECE = Σ_{b=1}^B (|S_b|/n) · |acc(b) − conf(b)|.
+  - Report both raw (0–1) and as ×100 for table comparability when needed; always store raw.
+
+- Failure prediction metrics:
+  - AUROC: sklearn.metrics.roc_auc_score(y_true, y_score), where y_true = 1 for correct, 0 for incorrect; y_score = confidence in correctness (in [0,1]). If all scores are identical, AUROC=0.5 by convention.
+  - AUPRC-Positive (PR-P): average_precision_score(y_pos, y_score), where y_pos = 1 for incorrect samples (treating errors as positive class), 0 otherwise.
+  - AUPRC-Negative (PR-N): average_precision_score(y_neg, y_score), where y_neg = 1 for correct samples, 0 otherwise.
+  - For Top-K/Pair-Rank, use the aggregated confidence for â as y_score.
+
+- Reliability diagrams and confidence histograms:
+  - Reliability: same bins as ECE; plot conf(b) vs acc(b) with bin sizes annotated; store (conf(b), acc(b), |S_b|).
+  - Histograms: 5% bins at {50,55,...,100} (as in paper visuals); store counts per bin and fraction incorrect within each bin.
+
+- Aggregation of results:
+  - Per-sample: store prediction, confidence, correctness, and any intermediate details (e.g., per-step confidences, Top-K lists).
+  - Per-condition (dataset × model × method): compute Accuracy, ECE, AUROC, PR-P, PR-N.
+  - Overall: mean across datasets; also report standard deviation/variance when multiple runs (e.g., across M or seeds) are involved.
+
+- Output parsing robustness:
+  - Use regex to capture:
+    - Answer and Confidence line: r"Answer and Confidence.*?:\s*([^,]+)\s*,\s*([0-9]+(?:\.[0-9]+)?)\s*%".
+    - Confidence only (Self-Probing): r"Confidence:\s*([0-9]+(?:\.[0-9]+)?)".
+    - Top-K: lines starting with "G[0-9]+:" and "P[0-9]+:"; tolerate minor whitespace; ignore extra commentary but prefer strict matches.
+  - Strip quotes, punctuation; normalize whitespace; enforce single prediction per sample after normalization.
+
+
+## Implementation Notes
+
+- Prompts and required formats:
+  - Always append: "Note: The confidence indicates how likely you think your answer is true." to every prompt (as specified in Table 1).
+  - Enforce exact output formats to ease parsing; if the model deviates, send one repair prompt: "Only output in the specified format. Do not include any other words."
+  - For Top-K, require exactly K lines of Gi/Pi pairs; if fewer appear, accept the present pairs; if more appear, take the first K.
+
+- Order of operations and independence:
+  - Self-Probing must use two independent chats: do not include prior turns from Phase A; pass only the question and the "Possible Answer" string into Phase B.
+  - For sampling (Self-Random / Misleading / Prompting) ensure each of the M queries is an independent API call with no shared chat history. Set temperature to 0.7, top_p=[uncertain] (default 1.0).
+  - Evaluate single-shot baselines (vanilla, CoT, Top-K M=1) before sampling-based methods.
+
+- Misleading hints content:
+  - Insert the hint on its own line immediately before the question text: "Hint: ...".
+  - For generated misleading answers:
+    - Multi-choice: random option from the provided choices.
+    - Yes/No: random choice "Yes" or "No".
+    - Numeric/date: draw from simple priors; ensure valid formatting (integer for counts; valid date string or weekday token).
+  - Rotate through Weak Claim / Strong Claim / External Source phrasing; for group experiments, restrict to the selected group only.
+
+- Pair-Rank implementation caveats:
+  - Treat "without replacement" ranking as in the paper; in practice, deduplicate repeated guesses within a single Top-K list, preserving first occurrence.
+  - If a pair (u,v) never co-occurs across all N generations, exclude it from the loss; ensure at least one comparison per candidate or add a small prior (e.g., θ_u ~ N(0, 0.1^2)).
+  - Convergence checks: stop if relative loss change < 1e-6 or after 1000 steps; clip logits to [-15, 15] to prevent numerical overflow.
+
+- Multi-Step confidence:
+  - Compute both the stated "Overall Confidence" and the product-of-steps confidence; use the product version for primary scoring (as per §3.2 formula C_multi-step = Π_i Ci).
+  - If any step confidence is missing or unparsable, fall back to the stated overall confidence for that sample; log the event.
+
+- Equality checks and canonicalization:
+  - Numbers: compare as floats with absolute tolerance 1e-6; treat "1" and "1.0" as equal.
+  - Dates: canonicalize to YYYY-MM-DD or a canonical weekday token before equality.
+  - Yes/No: canonicalize to lowercase "yes"/"no".
+  - Multi-choice: ensure the option letter is actually present among the provided options; if the model outputs an option text, map it back to the letter by exact match; if ambiguous, mark invalid.
+
+- Sampling budget and scheduling:
+  - To respect API budgets, cap per-dataset sample sizes (e.g., 200–500 per dataset per strategy per model) and prioritize:
+    - Core baselines (vanilla, CoT, Top-K M=1).
+    - Sampling with M=5 + Consistency.
+    - Aggregation study (Top-K + Self-Random + {Consistency, Avg-Conf, Pair-Rank}).
+  - Run ablations (role-play, hint groups, M-scaling) on a subset of datasets representative of each task type to save budget.
+
+- Error handling:
+  - If AUROC cannot be computed due to all-equal confidences, assign AUROC=0.5 and log.
+  - If ECE bins are empty, skip their contribution (weight=0).
+  - For Top-K where P1..Pk do not sum to 100, accept as-is; do not renormalize for the M=1 Top-K experiment.
+
+- Reproducibility:
+  - Fix random seeds for hint selection and paraphrase generation per run.
+  - Log all prompts and raw responses verbatim, along with parsed fields and any repair attempts.
+
+- Output files:
+  - Per experiment: CSV with columns [id, dataset, method, prompt_variant, sampling_variant, aggregator, M, K, prediction, confidence, correct, raw_output_json, extras_json].
+  - Per condition: JSON summary with metrics (Accuracy, ECE, AUROC, PR-P, PR-N), sample counts, and configuration (temperature, bins=B, etc.).

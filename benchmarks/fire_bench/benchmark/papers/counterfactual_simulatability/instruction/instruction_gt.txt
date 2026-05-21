@@ -1,0 +1,230 @@
+You are a research agent. Conduct research and experiment about the question: "Do natural language explanations provided by language models enable humans to accurately simulate the model's behavior under counterfactual inputs?"
+
+You have access to the following resources:
+
+Models:
+- gpt-3.5-turbo and gpt-4 via the provided inference utilities
+- You can call these models using: from utils.llm_inference import LLMInference
+- API key is provided with the LLMInference initialization function
+- You can use the batch_generate() function to speed up the experiment
+- Computational budget: 1000 API calls per model
+
+Datasets:
+- You should use natural language inference (NLI) and question answering (QA) tasks for this study.
+- For NLI, you can use:
+```python
+from datasets import load_dataset
+ds = load_dataset("nyu-mll/multi_nli")
+```
+- For QA, you can use:
+```python
+from datasets import load_dataset
+ds = load_dataset("rajpurkar/squad_v2")
+```
+
+Experimental Design:
+- For each input, obtain the model's prediction and a free-text explanation.
+- Create counterfactual variants of the input (e.g., negating a premise, changing a key entity).
+- Test whether a separate model (acting as a proxy for a human) can predict the original model's output on the counterfactual input, given only the original input, original prediction, and explanation.
+- Compare simulatability with and without explanations to measure their informational value.
+
+Please design and execute experiments to investigate this research question. Document experimental plan, run end-to-end experiments, and provide conclusions at different levels of detail.
+
+---
+
+## Experimental Design
+
+1) Multi-hop yes/no reasoning simulatability (StrategyQA)
+- Procedure:
+  - For each starter item x:
+    - Generate explanations under two settings for the same model:
+      - CoT: prompt to first produce a reasoning trace and then end exactly with “So the answer is ... yes/no.” Use the exact template in Implementation Notes (StrategyQA-Explanation Generation).
+      - Post-Hoc: first elicit the model’s yes/no output only; then prompt for an explanation conditioned on x and the model’s output (template in Implementation Notes).
+    - Counterfactual generation: for each (x, ex, ox), generate n=10 follow-up yes/no questions x′ that a human/LLM could confidently guess based on ex and ox. Use the exact template in Implementation Notes (StrategyQA-Counterfactual Generation). To produce the “GPT-mix” condition, sample 5 counterfactuals from each of the two generators and concatenate; shuffle their order per item.
+    - Simulation (human or LLM acting as simulator): present (x, ex, ox) and each x′ to the simulator with the exact instructions in Implementation Notes (StrategyQA-Simulation). The simulator must output one of:
+      - “Yes” or “No” (the inferred robot answer), or
+      - “I cannot guess the robot’s answer to the follow-up question based on its response to the starter question.”
+    - Obtain model outputs on each x′ (no explanation needed). Record the model’s actual yes/no answer to each counterfactual.
+    - Filter: define the simulatable set C* as counterfactuals for which the simulator did not respond with “I cannot guess...”.
+  - What to record:
+    - Raw model generations for CoT/Post-Hoc (full text), extracted final answers ox, and explanations ex.
+    - Raw counterfactual prompts and all generated follow-ups x′.
+    - Raw simulator outputs for each x′ and the extracted inferred labels.
+    - Model’s actual outputs for each x′ (ox′).
+    - Per-item simulatable flags, precision per item, generality components (pairwise similarity matrix among x′ ∈ C*), and “Sim.%” (fraction simulatable).
+  - Correspondence: Figures/Sections/Results supporting Tables 1, 2, 4, 5, 6; Section 4.3 (generation), 4.4 (simulation), 5.1 (sanity checks), 5.2 (main results).
+
+2) Preference modeling simulatability (SHP)
+- Procedure:
+  - For each starter item (context post plus two candidate responses):
+    - CoT: prompt to reason and end exactly with “So Candidate Response 1/2 is more helpful.” (template in Implementation Notes: SHP-Explanation Generation).
+    - Post-Hoc: first elicit which candidate is more helpful; then ask for an explanation conditioned on the choice (template in Implementation Notes).
+    - Counterfactual generation: for each (starter context, two candidates, explanation ex, choice ox), generate n=6 new follow-up examples (context + two candidates) that the simulator can confidently guess based on ex and ox only (Implementation Notes: SHP-Counterfactual Generation).
+    - Simulation (LLM or human): present the starter’s ox and ex only and the follow-up example; the simulator must answer:
+      - “Response 1,” “Response 2,” or “Robot is equally likely to choose Response 1 or 2.” (Implementation Notes: SHP-Simulation).
+    - Obtain model’s actual choice on each follow-up (no explanation required).
+    - Filter: simulatable C* drops those with “Robot is equally likely...” labels.
+  - What to record:
+    - Raw model generations, extracted final choices, explanations.
+    - All follow-up examples and simulator outputs (raw + extracted label).
+    - Model’s actual choices for follow-ups.
+    - Per-item simulatable flags, precision, generality statistics, and Sim.%.
+  - Correspondence: Tables 1, 3, 4, 5, 6; Sections 4.2–4.4, 5.1–5.2.
+
+3) Simulator agreement study
+- Procedure:
+  - For a shared set of follow-ups, collect three human simulator labels per follow-up and single-shot LLM simulator labels using the exact simulation prompts for the corresponding task.
+  - Compute Cohen’s kappa:
+    - Human–Human: pairwise kappas among the three humans (average them).
+    - Human–LLM: kappa between the LLM simulator and each human (average).
+    - Report the ratio “H–GPT-x divided by H–H” as in Table 3.
+  - What to record: raw labels per annotator, LLM labels, agreements, kappas, and their averages.
+  - Correspondence: Table 3; Section 5.1 (LLMs approximate human simulators).
+
+4) Counterfactual generation diversity comparison
+- Procedure:
+  - For each starter, produce two counterfactual sets:
+    - LLM-prompted (as above).
+    - Baseline generator that ignores explanations (PolyJuice-style) on the starter only. If using a public implementation, keep default configurations; otherwise, apply lexical/semantic perturbations matching the original paper’s use of PolyJuice [uncertain].
+  - For each set, after simulation filtering, compute generality using BLEU, Cosine, and Jaccard, and record Sim.% (fraction simulatable).
+  - What to record: per-starter generality metrics, Sim.%, and macro averages.
+  - Correspondence: Table 1; Section 5.1 (LLM prompting vs. baseline).
+
+5) CoT vs Post-Hoc and scale study (precision benchmarking)
+- Procedure:
+  - For each starter, evaluate both explanation methods and compute simulation precision over C* (per-starter; then aggregate).
+  - Report per-task means across starters and per-condition (method × model) with 95% CIs via bootstrap [uncertain].
+  - What to record: per-starter precision, per-condition macro averages.
+  - Correspondence: Table 4; Section 5.2.1.
+
+6) Generality–precision and plausibility correlations
+- Procedure:
+  - For each starter, obtain four explanations (2 methods × 2 models). For each explanation, compute its precision and generality (BLEU/Cosine/Jaccard).
+  - Plausibility: collect 3-way ratings (Yes/Moderate/No) per explanation using the exact rubric in Implementation Notes; aggregate to numeric scores (Yes=2, Moderate=1, No=0).
+  - For each starter, compute Spearman and Pearson correlations across the four explanations between:
+    - Precision and Plausibility.
+    - Precision and each generality metric.
+  - Average correlations across starters; report means and [uncertain] CIs.
+  - What to record: per-starter vectors, correlations, and aggregated stats.
+  - Correspondence: Tables 5 and plausibility–precision analysis in Section 5.2.2.
+
+7) Task difficulty vs. simulation precision
+- Procedure:
+  - Compute task accuracy for each starter set (model’s correctness vs. gold).
+  - Report mean task accuracy and mean simulation precision (averaged across explanation systems) per task.
+  - What to record: per-starter correctness, per-condition accuracies, per-task averages of accuracy and simulation precision.
+  - Correspondence: Table 6; Section 5.2.2.
+
+8) FORCED baseline (discriminative power sanity check)
+- Procedure:
+  - Identify starters where the model is correct under NORMAL Post-Hoc (i.e., predicted the correct label/choice).
+  - Create FORCED explanations by conditioning the model to produce a Post-Hoc explanation that ends with the opposite final answer/choice (explicitly force the terminal string to select the non-chosen option). Use the template in Implementation Notes (FORCED Post-Hoc).
+  - For each starter, reuse the same counterfactuals and simulation pipeline; compute simulation precision using FORCED explanations.
+  - Compare NORMAL vs FORCED simulation precision on this subset.
+  - What to record: per-starter precision under both settings and the delta.
+  - Correspondence: Table 2; Section 5.1.
+
+## Evaluation Details
+
+- Output parsing and normalization:
+  - Yes/no extraction: regex on “So the answer is (yes|no).” Case-insensitive; strip punctuation and whitespace; normalize to {yes,no}.
+  - Preference extraction: regex on “So Candidate Response (1|2) is more helpful.” Normalize to {1,2}.
+  - Simulator outputs:
+    - Yes/no task: map simulator’s “yes/no” to {yes,no}; map “I cannot guess ...” to UNSIMULATABLE.
+    - Preference task: map to {1,2}; map “Robot is equally likely ...” to UNSIMULATABLE.
+  - Any unparsable final string is marked INVALID and excluded; log rate.
+
+- Simulation precision:
+  - For simulatable set C* = {x′ | simulator did not return UNSIMULATABLE}:
+    precision = (1/|C*|) * Σx′∈C* 1[simulator(x′) = model(x′)]
+  - Edge cases: if |C*| = 0, define precision as NaN; exclude from macro averages but report count of exclusions.
+
+- Simulation generality:
+  - For C* with |C*| ≥ 2, compute one minus average pairwise similarity:
+    generality = 1 − (1/(|C*|(|C*|−1))) * Σx′≠x′′∈C* α(x′, x′′)
+  - Similarity α:
+    - BLEU: sentence-level BLEU with smoothing [uncertain]; tokenize with sacrebleu default; lowercase.
+    - Cosine: cosine similarity between sentence embeddings Enc(x′) and Enc(x′′); encoder = [uncertain] (use a fixed, publicly available sentence transformer); lowercase prior to encoding.
+    - Jaccard: token-level sets after lowercasing and removing English stopwords (NLTK list); tokenize by simple whitespace + punctuation strip; Jaccard = |A∩B|/|A∪B|.
+  - If |C*| ≤ 1, set generality to NaN and exclude from averages; report count.
+
+- Sim.% (simulatability rate):
+  - Sim.% = (# of x′ with simulator ≠ UNSIMULATABLE) / (total # generated x′)
+
+- Task accuracy:
+  - Yes/no: fraction of starters with model’s final yes/no equal to gold label.
+  - Preference: fraction of starters with model’s chosen response equal to dataset-preferred response (binary label).
+
+- Aggregation:
+  - Per-starter: compute precision and generality (and Sim.% across x′).
+  - Per-condition (e.g., method × model): macro-average across starters, excluding NaNs; report mean ± [uncertain] 95% CI via bootstrap over starters.
+  - For diversity comparison (Table 1): compute per-starter generality for each generator, then report macro-average and Sim.% macro-average.
+
+- Human label aggregation (if used):
+  - Simulation: majority vote among three annotators; ties → UNSIMULATABLE.
+  - Plausibility: average of mapped scores (Yes=2, Moderate=1, No=0) across annotators; for correlation, use the mean score per explanation.
+
+- Agreement metrics (Table 3):
+  - Compute Cohen’s kappa (κ) on categorical labels between:
+    - Each pair of humans (average to get H–H).
+    - LLM simulator vs. each human (average to get H–LLM).
+  - Report normalized agreement = (H–LLM) / (H–H).
+
+- Correlations (Tables 5 and plausibility analysis):
+  - For each starter, gather 4 points (one per explanation system) for metric A and metric B, compute Spearman’s ρ and Pearson’s r; then average ρ and r across starters. Handle missing values by pairwise deletion.
+
+## Implementation Notes
+
+- Prompt templates (exact wording; preserve line breaks and terminal strings):
+  - StrategyQA-Explanation Generation (CoT):
+    - Use the full multi-shot prompt that instructs: “first generate a trace of reasoning and then end with your final answer exactly with ‘So the answer is ...’ yes or no.” Include the exemplars and end with “Q: Yes or no: Is it hard to get a BLT in Casablanca? A: Assistant: here is my response.” as in Appendix B.
+  - StrategyQA-Counterfactual Generation:
+    - Use the instruction framing: “write a follow-up yes or no question that you can confidently guess the robot’s answer to based on its answer to the starter question... then write your guess.” Use the exemplars verbatim.
+  - StrategyQA-Simulation:
+    - Use the instruction framing with “If not, put down ‘I cannot guess the robot’s answer...’ If yes, put down your guess... You should stick to the robot’s reasoning and claims... even if ... wrong.” Use exemplars verbatim.
+  - SHP-Explanation Generation (CoT):
+    - Use the instruction framing: “read a context post and two candidate responses... generate a trace of reasoning and then end with your final choice exactly with (‘So Candidate Response 1/2 is more helpful.’). Strictly follow the example format and do not say anything else.” Include exemplars.
+  - SHP-Counterfactual Generation:
+    - Use the instruction framing: “write a new follow-up example that you can confidently guess the robot’s answer to based on its choice in the starter question.” Include exemplars.
+  - SHP-Simulation:
+    - Use the instruction framing: “use solely [the starter] information to guess the robot’s choice in another follow-up example... If you cannot confidently guess ... say so.” Include exemplars.
+
+- Post-Hoc elicitation:
+  - Yes/no: first query “Answer only ‘yes’ or ‘no’ for this question: ...” Then query: “Provide an explanation for your previous answer. End with: ‘So the answer is yes/no.’”
+  - Preference: first query “Which is more helpful? Respond exactly as: ‘So Candidate Response 1/2 is more helpful.’” Then query: “Provide an explanation for your previous choice and end with the same terminal sentence.”
+
+- FORCED Post-Hoc template:
+  - After obtaining the model’s NORMAL choice, construct a second prompt: “You will now justify why Candidate Response [the non-chosen index] is more helpful. Provide a coherent rationale and end exactly with ‘So Candidate Response [that index] is more helpful.’ Do not mention the other response.” Use this forced explanation in the simulation stage.
+
+- Order-of-operations constraints:
+  - For CoT: reasoning must be generated before the final answer; do not leak the answer earlier than the terminal string.
+  - For Post-Hoc: obtain the final answer/choice first; then elicit the explanation conditioned on both the input and the model’s own output.
+  - For counterfactual outputs: query only the output (no explanation) to avoid influencing the model’s behavior on x′.
+
+- Parsing and validation:
+  - Enforce terminal strings exactly (“So the answer is yes/no.”; “So Candidate Response 1/2 is more helpful.”). Reject and re-query once on mismatch; if still invalid, mark INVALID and proceed.
+  - For SHP simulation, map “Robot is equally likely to choose Response 1 or 2” to UNSIMULATABLE.
+
+- Counterfactual generation hygiene:
+  - Deduplicate identical or near-duplicate follow-ups within each C by exact match; if duplicates reduce |C| below target, regenerate until target is met or a max of 3 regeneration attempts.
+  - Disallow follow-ups that copy the starter verbatim.
+  - Keep the generator blind to gold labels and to model outputs on follow-ups.
+
+- Human simulation (if used):
+  - Use the provided instructions (Figures 3–5) including the “stick to the robot’s reasoning” and “assume missing facts are correct” rules.
+  - Collect three annotations per follow-up; use majority vote; tie → UNSIMULATABLE.
+
+- Diversity baseline (PolyJuice):
+  - If the original tool is unavailable, implement lexical (negation, number/entity swaps) and semantic (tense/mood changes) perturbations akin to PolyJuice; ensure the baseline does not access ex.
+
+- Edge cases and logging:
+  - If |C*|=0, skip precision/generality for that starter; log counts per condition.
+  - Record all random seeds; store prompts, raw generations, parsed fields, and evaluation artifacts for auditability.
+
+- Resource budgeting:
+  - Each starter requires:
+    - 1–2 calls to elicit ex/ox (per method),
+    - n calls to generate counterfactuals (per generator used),
+    - n simulator calls,
+    - n calls for model outputs on x′.
+  - Choose the number of starters per task accordingly to remain within the API budget [uncertain].

@@ -1,0 +1,264 @@
+You are a research agent. Conduct research and experiment about the question: "Are large language models metacognitively aware of when they are hallucinating or producing unreliable outputs?"
+
+You have access to the following resources:
+
+Models:
+- o1-like models: o1, o1-mini
+- Conventional models: GPT-4o-mini, GPT-4o
+- Load with HuggingFace: meta-llama/Llama-3.1-8B
+- You can call these models using: from utils.llm_inference import LLMInference
+- API key is provided with the LLMInference initialization function
+- You can use the batch_generate() function to speed up the experiment
+- Computational budget: 1000 API calls per model
+
+Datasets:
+- You should construct a mix of questions where:
+    - Some have well-known, verifiable answers (the model is expected to answer correctly).
+    - Some are obscure, recently emerged, or fictional (the model is likely to hallucinate).
+    - Some are trick questions or contain false presuppositions.
+- For factual questions, you may use:
+```python
+from datasets import load_dataset
+ds = load_dataset("trivia_qa", "unfiltered")
+```
+
+Experimental Design:
+- For each question, first obtain the model's answer, then ask the model to rate its own confidence that the answer is correct (e.g., on a 0-100 scale).
+- Separately verify the factual correctness of each answer.
+- Analyze the relationship between self-reported confidence and actual correctness.
+
+Evaluation Methods:
+- Compute calibration metrics: Expected Calibration Error (ECE), Brier score, AUROC for separating correct vs. incorrect answers using self-reported confidence.
+- Measure whether models assign lower confidence to hallucinated answers versus correct ones.
+- Test whether explicitly prompting the model to consider whether it might be wrong improves calibration.
+
+Please design and execute experiments to investigate this research question. Document experimental plan, run end-to-end experiments, and provide conclusions at different levels of detail.
+
+---
+
+## Experimental Design
+
+1) Controlled RFC Knowledge Environment (Type I / Type II subsets; RQ1; Table 1; Appendix B)
+- Procedure:
+  - Source pool: RFCs listed in Table 11 (paper). Use four non-overlapping subsets as specified there: Type I (314 RFCs), Type I Control (50), Type II (50), Type II Control (38).
+  - For each RFC in Type I:
+    - Generate 10 template-based questions using the exact template set in “Prompt Template for Type I Question Generation” (Appendix F).
+    - For each question, sample 5 independent reasoning-style answers (temperature > 0; [uncertain]=0.7) and capture both final answer and full CoT.
+    - Label as Type I if (i) the 5 samples are consistent (self-consistency true) AND (ii) at least 4/5 contain factual errors w.r.t. the RFC.
+  - For Type I Control:
+    - For each RFC, generate 10 “Why” questions using “Prompt Template for Type I Control Question Generation” (Appendix F).
+    - For each question, sample 5 answers; retain those with perfect factuality (0/5 errors) and high self-consistency (true) as Type I Control.
+  - For Type II and Type II Control:
+    - For each RFC, generate 10 “Why” questions that embed exactly three intentionally false facts by using “Prompt Template for Type II” (Appendix F; see “wrong_fact1..3” fields).
+    - Validate each question contains exactly three introduced false facts via RFC-grounded RAG (string/regex match against the RFC text or a local index). Discard otherwise.
+    - For each validated question, sample 5 answers. Label as:
+      - Type II if ≥4/5 answers fail to fully correct all three introduced errors.
+      - Type II Control if all 5/5 fully correct the three errors.
+- What to record per sample:
+  - RFC id, question, prompt template id, the 5 answers, 5 CoTs, per-answer factuality flag (binary), self-consistency flag (binary), external wrong facts (for Type II), RAG references used for verification, final subset label.
+- Notes:
+  - Keep exact acceptance decision thresholds: “≥4 errors out of 5” (Type I) and “≥4 failures out of 5” (Type II); “0 errors out of 5” (Type I Control) and “all five fully corrected” (Type II Control).
+  - Store token counts of CoT and answer for later statistics (Table 1).
+
+2) Behavioral Audit of Long-CoT Trajectories (RQ2; Table 2; Figure 2; Appendix C)
+- Procedure (per QA with CoT):
+  - Claim segmentation: split CoT into sentences (details in Evaluation). Index claims by order (depth) from 1..N.
+  - Sentence-level hallucination tagging using the “Sentence-Level Hallucination Annotation” prompt (Appendix F). Output JSON per sentence (id, claim text, hallucination true/false).
+  - For hallucinated claims, determine Accepted/Corrected/Rejected using the dedicated prompt (Appendix F). Output JSON booleans per claim.
+  - Identify up to 5 “important hallucinated claims” using the prompt in Appendix F (select those that strongly affect final answer). Count repetition frequency per selected claim (details in Evaluation).
+  - External vs internal incorrect knowledge:
+    - Type II: mark any sentence that uses or cites wrong_fact1..3 as “external incorrect knowledge”.
+    - Any other false factual content not from wrong_fact1..3 is “internal incorrect knowledge”.
+  - Reflection evidence counting:
+    - Count explicit reflection markers (using Appendix C.1 categories and the “Reflection Times Counting” prompt).
+    - Count hedging words (“perhaps”, “maybe”), interrogative sentences, hesitation markers (“but wait”, “hold on”) per CoT.
+- What to record:
+  - Per-sentence annotations (hallucinated?, accepted/corrected/rejected), external/internal incorrect knowledge tallies and their adoption/correction/rejection counts, reflection counts, hedging/interrogatives/hesitation counts, important hallucinated claims and their repetition counts, per-CoT totals: number of claims, rate of hallucinated claims, average depth of hallucinated claims.
+
+3) CoT Editing Intervention Study (RQ3; Figure 3; Figure 4; Figure 5; Appendix D)
+- Sample selection:
+  - 70 samples total: 40 hallucinated (mix of Type I and Type II) + 30 non-hallucinated (mix of Control subsets).
+- Locate first incorrect knowledge:
+  - Run the “Identifying First Incorrect Knowledge in Long-CoT” prompt (Appendix F) 5 times and keep the earliest identical sentence returned across runs. Human-verify.
+- Define three edit points per sample:
+  - Edit 1: Before First Hallucination (insert one corrective assertion just before the first incorrect sentence).
+  - Edit 2: At First Hallucination (replace or prepend the first incorrect sentence with a corrective assertion).
+  - Edit 3: After First Hallucination (append a corrective assertion a few sentences after the first incorrect sentence; [uncertain]=+3 sentences).
+  - For non-hallucinated cases, inject one incorrect assertion at an early point (after claim 1).
+- Editing protocol:
+  - Truncate original CoT at the edit boundary, inject the assertion (in a reflective “thinking” style; e.g., “Hmm, actually, according to RFC …, …”), then resume generation from that point to the final answer.
+  - Ensure the injected assertion is minimal, factual (for fixing) or minimally-wrong (for adding hallucination), and directly targets the erroneous claim.
+- Metrics to annotate per edit (M1–M6; see Evaluation Details):
+  - M1: Edit accepted?
+  - M2: Downstream CoT changed?
+  - M3: Final answer changed?
+  - M4: New CoT consistent with new answer?
+  - M5: Edited claim propagated to answer?
+  - M6: New answer hallucinated?
+- What to record:
+  - Original CoT/answer, edited CoT/answer, injection text and location, per-metric labels, reviewer ids, adjudication notes.
+
+4) Detection Baselines Benchmark (RQ4; Table 3; Appendix E)
+- Methods to implement and evaluate:
+  - Internal-signal probing:
+    - Logit Entropy (top-K token entropy).
+    - Attention Strength (average log of diagonal attention weights).
+    - Spectral Entropy (SVD-based score on hidden states).
+  - Trained detector:
+    - HDM2 document-level hallucination score.
+  - Semantic consistency:
+    - CCP (Claim-Conditioned Perplexity).
+    - SelfCheckGPT (main T=0 + N=20 samples at T=1).
+    - Semantic Entropy (claim-level Q=3 prompts × M=3 samples each).
+- Procedure:
+  - Split the constructed dataset into validation/test (e.g., 20%/80% stratifed by subset).
+  - Tune per-method thresholds on validation (maximize F1 for binary hallucination detection).
+  - Evaluate on test for Accuracy, Recall, F1, AUROC; also record per-sample wall-clock time and estimate efficiency classes (minutes/hours/days).
+- What to record:
+  - Per-sample detector scores, predicted labels at tuned thresholds, confusion matrices, AUROC curves, timing logs; method configs (K, layers, Q, M, N, temperatures).
+
+5) Auxiliary Analyses (Appendix B.7, B.8; Appendix E.4)
+- CoT length vs hallucination frequency (Table 8):
+  - For Type I, group questions by number of hallucinated answers among their 5 samples (0–5). Compute average claims-per-CoT for each group.
+- Prompt-aligned bias check (Table 9):
+  - Construct 1000 statements (500 true, 500 false) from the same RFC pool. Ask the model to label each as “correct” or “incorrect” under a neutral prompt. Record 2×2 confusion matrix.
+- Early vs late CCP (Table 10):
+  - For each output (CoT+answer), split by token position into:
+    - First 1/3 vs last 2/3; first 1/2 vs last 1/2; first 2/3 vs last 1/3.
+  - Compute mean CCP per segment and segment deltas per subset.
+- Claim-level detector cross-check (Figures 8–11):
+  - For 4 representative cases (one per subset), compute per-claim uncertainty from CCP, SelfCheckGPT, Semantic Entropy.
+  - Identify claims jointly high vs jointly low across detectors; manually verify correctness and log agreement/misclassification categories.
+
+## Evaluation Details
+
+Dataset construction labels (Table 1)
+- Self-consistency: all 5 answers semantically agree (use cosine similarity of sentence embeddings > 0.90 across pairwise comparisons or majority-vote on extracted atomic answers).
+- Factuality check: for each answer, exact-match or regex-match all factual assertions against the RFC text retrieved via RAG (precision required; partial/approximate matches treated as incorrect).
+- Type I selection: self-consistency = true AND count_incorrect_answers ≥ 4 (out of 5).
+- Type I Control selection: self-consistency = true AND count_incorrect_answers = 0.
+- Type II selection: per answer, “fully corrected” = all three wrong_fact{i} explicitly refuted/corrected; select if count_not_fully_correct ≥ 4 (out of 5).
+- Type II Control selection: all 5/5 are fully corrected.
+
+Claim segmentation and depth
+- Split CoT into sentences using period-based splitting with exceptions for common Latin abbreviations: e.g., i.e., vs., etc., et al., e.g. Do not split on line breaks alone.
+- Trim whitespace; drop empty strings. Index claims by order (1..N). Depth is the sentence index of a hallucinated claim (1-based).
+
+Hallucinated claim definition and adjudication (Appendix C.1/C.3)
+- Hallucination = a sentence with unsupported or factually incorrect content under RFC-grounded verification.
+- Categories used for qualitative audit:
+  - External incorrect knowledge: any sentence that adopts contents of wrong_fact1..3 (Type II).
+  - Internal incorrect knowledge: any hallucinated sentence not from wrong_fact1..3.
+  - Wrong reasoning, unreasonable assumptions (“if”, “suppose”, “assume”), self-queries (ends “?”, or rhetorical “let me think”, “could it be”, “wait ...”).
+- Accepted/Corrected/Rejected flags (per hallucinated claim):
+  - accepted = downstream CoT supports or uses the claim.
+  - corrected = downstream CoT explicitly replaces the claim with a corrected version.
+  - rejected = downstream CoT explicitly refutes the claim without an alternative.
+
+Reflection evidence (Table 2D)
+- reflection_times: as returned by the Reflection Times Counting prompt.
+- Hedging words count: case-insensitive counts of exactly “perhaps”, “maybe”.
+- Interrogatives: sentences ending with “?” (after trimming).
+- Hesitation markers: case-insensitive substring counts of “but wait”, “hold on”.
+- Report totals per CoT.
+
+Amplification effects (Table 2E)
+- Important hallucinated claims: selected via the prompt (up to 5).
+- repetition_count per important claim:
+  - Match approximate repeats using normalized Levenshtein similarity ≥ 0.8 or cosine similarity of sentence embeddings ≥ 0.92 against all claims in CoT; count occurrences.
+- Aggregate:
+  - Total repeats = sum over selected important claims.
+  - Avg repetition per key claim = Total repeats / (#selected claims).
+
+Editing metrics (Figure 3; Appendix D)
+- M1 (Accepted?): true if the injected assertion is present verbatim or paraphrased within ≤3 sentences after the insertion point and not immediately dropped/refuted.
+- M2 (CoT changed?): true if any claim after the insertion point differs from the original CoT (string or semantic diff with cosine similarity < 0.95 at aligned positions).
+- M3 (Answer changed?): true if extracted final answer differs semantically (cosine similarity < 0.92) or factually.
+- M4 (Consistent?): true if the edited CoT provides a logically consistent rationale for the edited final answer (no explicit contradiction; manual adjudication).
+- M5 (Edit→Answer?): true if the injected assertion’s content appears (verbatim or paraphrase) in the final answer or in the final reasoning step supporting the answer.
+- M6 (Hallucination?): true if the edited final answer contains any factual error under RFC-grounded verification.
+- Aggregation: compute per-edit-point rates across the edited set; also stratify by Type I vs Type II (hallucinated) and by controls.
+
+Detection baselines (Table 3; Appendix E)
+- Validation/test split: 20%/80% stratified by subset; seed fixed [uncertain]=2025. Tune thresholds on validation to maximize F1.
+- Metrics:
+  - Accuracy = (TP + TN) / (TP + FP + TN + FN).
+  - Recall (positive class = hallucination) = TP / (TP + FN).
+  - F1 (positive class) = 2TP / (2TP + FP + FN).
+  - AUROC from sklearn.metrics.roc_auc_score on raw detector scores vs binary hallucination labels.
+  - Efficiency: measure mean wall-clock time per sample and map to classes (minutes/hours/days) as qualitative descriptors; also report raw means.
+- Normalization:
+  - For internal-signal methods, run in teacher-forcing over the full (prompt + generated CoT + answer). If unavailable, skip those methods or run only on open-source models supporting logits/attentions/hidden states.
+- Method specifics:
+  - Logit Entropy: for each generated token, compute top-K softmax (K=[uncertain]=10), entropy Ht; aggregate by mean over tokens. Threshold on mean entropy.
+  - Attention Strength: per layer, compute mean log(diagonal attention weight) across tokens; select best-performing layer on validation.
+  - Spectral Entropy: for each layer’s hidden states (teacher-forced), compute centered covariance, SVD singular values σi, score = mean(log σi). Pick best layer on validation.
+  - HDM2: use its document-level score; threshold tuned on validation.
+  - CCP: decompose text into atomic claims; for each token, compute token-level confidence using NLI-filtered top-K alternatives as in [18]; aggregate to claim then to document (mean). Threshold on document score.
+  - SelfCheckGPT: main response at T=0; N=20 samples at T=1; per-sentence uncertainty by combining BERTScore-max dissimilarity, NLI contradiction, n-gram scoring, and prompt-based checks; aggregate to document.
+  - Semantic Entropy: per claim, generate Q=3 question variants; sample M=3 answers each (T=[uncertain]=1.0); cluster answers via bi-directional entailment; compute cluster probability distribution entropy; average across prompts and claims; threshold on document-level average.
+
+CoT length vs hallucination frequency (Table 8)
+- For Type I only: for each question with 5 runs, count how many runs are hallucinated; group into buckets 0..5; compute average number of claims per CoT per bucket.
+
+Prompt-aligned bias (Table 9)
+- Prepare 500 true and 500 false RFC-grounded statements. Prompt: “Decide if the statement is factually correct per the referenced RFC; answer ‘Correct’ or ‘Incorrect’ only.” Record confusion matrix.
+
+Early vs late CCP (Table 10)
+- Split each (CoT+answer) by token position:
+  - First 1/3 vs last 2/3; first 1/2 vs last 1/2; first 2/3 vs last 1/3.
+- Compute mean CCP per segment and relative change (∆%).
+
+Claim-level detector cross-check (Figures 8–11)
+- For selected cases (1 per subset), compute per-claim scores from three detectors (CCP, SelfCheckGPT, Semantic Entropy). Mark “joint-high” (all above per-detector medians) and “joint-low” (all below). Manually verify true/false per claim and tabulate error types.
+
+Aggregation strategy
+- Per-sample → per-condition → overall:
+  - Compute all per-sample statistics and labels.
+  - Aggregate by subset (Type I, Type I Control, Type II, Type II Control).
+  - Report overall means/medians and bootstrap 95% CIs [uncertain]=1,000 resamples for key rates; or mean ± std over 5 random splits.
+
+## Implementation Notes
+
+- Prompt templates:
+  - Use verbatim templates from Appendix F:
+    - Type I question templates (“Please introduce me the RFC {rfc_section}…”, “Please tell me which RFC was obsoleted by RFC {rfc_section}.”, etc.).
+    - Type I Control “Why” question generator (JSON output format with “question” and “claims”).
+    - Type II question generator embedding exactly three false facts and populating wrong_fact1..3.
+    - Annotation prompts for sentence-level hallucination, accepted/corrected/rejected, important hallucinated claims, reflection counting.
+    - First incorrect knowledge locator (strict period-based splitting; output only the first hallucination sentence).
+- CoT capture:
+  - Some APIs suppress hidden reasoning. If native CoT is unavailable, request explicit, auditable step-by-step reasoning in the output and parse from the model-visible content. For parity across methods, keep generation settings fixed within each experiment and document any model-specific differences.
+- RFC-grounded verification:
+  - Maintain a local RFC corpus for exact/regex match. For each claim, verify against the correct RFC number listed with the sample. Keep evidence spans (start,end, text).
+  - For Type II, ensure each question includes exactly three injected false facts before sampling answers (automated pre-check with RFC regex match).
+- Claim segmentation pitfalls:
+  - Follow the period-only splitting rule for the “first incorrect knowledge” locator. For general claim segmentation in audits, you may use a robust sentence splitter (e.g., spaCy) but ensure consistency across the dataset. Document which splitter is used for which subtask.
+- Counting lexicons:
+  - Hedging: count only “perhaps”, “maybe” (case-insensitive) to match Table 2. Do not expand the list unless running ablation; mark expansions as [uncertain].
+  - Hesitation: count “but wait”, “hold on” (case-insensitive).
+  - Interrogatives: sentences ending with “?” after trimming whitespace.
+- Edit assertions:
+  - Keep edits minimal and RFC-faithful. The corrective assertion should directly negate the first incorrect claim and provide the correct form with a citation-like reference to the RFC section number when feasible.
+  - For non-hallucinated cases, the injected incorrect assertion must be plausible but false and minimally invasive.
+- Threshold tuning:
+  - Use the same validation split for all detectors. Store tuned thresholds and random seeds.
+  - For per-layer methods (attention, spectral), select the layer with highest validation F1 and freeze it for test.
+- Internal-signal methods:
+  - Require logits/attentions/hidden states and teacher-forcing on gold text. If unavailable for some models, restrict these methods to those that provide internals and report per-model coverage.
+- Efficiency logging:
+  - Record per-sample wall-clock time and system info. For Semantic Entropy and SelfCheckGPT, log N, Q, M and total token counts to contextualize runtime.
+- Order of operations:
+  - Construct and lock the RFC-based datasets first (Type I/Control, Type II/Control).
+  - Run behavioral audits on the locked datasets.
+  - Run CoT editing on a pre-specified stratified sample set; do not reuse samples for threshold tuning.
+  - Tune detection thresholds on validation; evaluate on test only once per method.
+- Output formats:
+  - Store all annotations as JSON Lines with stable keys:
+    - sentence_id, claim, hallucination, accepted, corrected, rejected, external/internal flags, reflection_times, hedging_count, interrogative_count, hesitation_count, important_claims[], repetition_counts[], edit_point, edit_text, M1..M6.
+- Edge cases:
+  - If a CoT has zero sentences after segmentation, flag and exclude from per-claim analyses (but keep for answer-level detection).
+  - If wrong_fact{i} are not referenced at all in Type II answers, still score “fully corrected” only if the answer explicitly rejects all three false facts or provides correct alternatives. Otherwise mark as not fully corrected.
+- Reproducibility:
+  - Fix random seeds for sampling. Log all hyperparameters (temperatures, top_p, top_k, max_tokens).
+  - Keep a manifest linking every result (figures/tables) to the exact sample ids and code configs used.

@@ -1,6 +1,6 @@
-# TreeScientist: Budget-Adaptive Research Plan Tree Search
+# MetaScientist: Budget-Adaptive Research Plan Tree Search
 
-Code for **TreeScientist**, a budget-adaptive tree-search framework for
+Code for **MetaScientist**, a budget-adaptive tree-search framework for
 autonomous research agents. Each tree node is an *experimental plan*
 executed by a coding agent; a *reflector agent* reads each result and
 proposes child plans. A budget-adaptive selection rule (BAVT,
@@ -10,12 +10,12 @@ token budget is consumed.
 Evaluated on three benchmarks:
 - **FIRE-Bench** — research-paper replication, scored by RAGChecker F1.
 - **AutoLab** — systems-engineering code optimization, scored by throughput ratio.
-- **MLE-Bench** — Kaggle-style ML engineering (results pending).
+- **MLE-Bench** — Kaggle-style ML engineering.
 
 Baselines: a **linear AutoResearch** edit-run-keep-or-revert loop
 (`run_vanilla.py`) and a single-shot agent — both under the same token budget.
 
-> Paper: *TreeScientist: Budget-Constrained Exploration for Autonomous Research*.
+> Paper: *MetaScientist*.
 > arXiv link forthcoming.
 
 ---
@@ -24,8 +24,8 @@ Baselines: a **linear AutoResearch** edit-run-keep-or-revert loop
 
 ```bash
 # 1. Conda env
-conda create -n treescientist python=3.11 -y
-conda activate treescientist
+conda create -n metascientist python=3.11 -y
+conda activate metascientist
 pip install -r requirements.txt
 
 # 2. Secrets
@@ -50,7 +50,7 @@ flag reference, and how to customize the task list. Smoke-test by setting
 ## Repository layout
 
 ```
-run_search.py               # entry point: tree search (TreeScientist)
+run_search.py               # entry point: tree search (MetaScientist)
 run_vanilla.py              # entry point: linear AutoResearch baseline
 scripts/                    # tmux launchers for FIRE-Bench / AutoLab
   run_firebench.sh

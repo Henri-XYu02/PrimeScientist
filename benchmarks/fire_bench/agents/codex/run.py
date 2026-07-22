@@ -11,7 +11,10 @@ load_dotenv()
 
 # Repo path
 Main_Path = Path(__file__).parents[2]  # benchmarks/fire_bench/ (contains benchmark/ data)
-Data_Path = Path("/data/xinle/FIRE-Bench")
+# Must match the harness (FireBench reads FIRE_BENCH_DATA). Hardcoding this broke
+# per-repeat isolation: the agent wrote logs somewhere the harness never looked,
+# so every run was reported "agent run failed" while still spending real tokens.
+Data_Path = Path(os.environ.get("FIRE_BENCH_DATA") or "/data/xinle/FIRE-Bench")
 
 
 def _load_skills(main_path: Path, task_id: str) -> str:

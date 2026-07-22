@@ -64,6 +64,24 @@ def _read_total_tokens(cost_ledger: Path) -> int:
     return total
 
 
+def _read_total_cost(cost_ledger: Path) -> float:
+    """Sum cost_usd across all rows in costs.tsv (agent + reflector)."""
+    if not cost_ledger.exists():
+        return 0.0
+    total = 0.0
+    try:
+        for line in cost_ledger.read_text(encoding="utf-8").splitlines()[1:]:
+            parts = line.split("\t")
+            if len(parts) >= 4:
+                try:
+                    total += float(parts[3] or 0)
+                except ValueError:
+                    pass
+    except Exception as e:
+        log_error("_read_total_cost", e, cost_ledger=cost_ledger)
+    return total
+
+
 def _compute_alpha(
     cost_ledger: Path,
     max_tokens: int,
@@ -421,6 +439,7 @@ def run_search(
     alpha_max: float = 10.0,
     n_runs: int = 1,
     prune_threshold: float = 0.0,
+    max_cost_usd: float = 0.0,
 ) -> None:
 
     benchmark    = load_benchmark(benchmark_name, benchmark_path)
@@ -490,9 +509,14 @@ def run_search(
             parts.append(f"tokens={_read_total_tokens(cost_ledger):,}/{max_tokens:,}")
         if max_time_sec > 0:
             parts.append(f"time={time_module.time()-start_time:.0f}s/{max_time_sec}s")
+        if max_cost_usd > 0:
+            parts.append(f"cost=${_read_total_cost(cost_ledger):.2f}/${max_cost_usd:.0f}")
         return "  ".join(parts)
 
     def _over_budget() -> bool:
+        if max_cost_usd > 0 and _read_total_cost(cost_ledger) >= max_cost_usd:
+            print(f"  [budget] Cost limit reached: ${_read_total_cost(cost_ledger):.2f} >= ${max_cost_usd:.2f} (est.)")
+            return True
         if max_tokens > 0 and _read_total_tokens(cost_ledger) >= max_tokens:
             print(f"  [budget] Token limit reached: {_read_total_tokens(cost_ledger):,} >= {max_tokens:,}")
             return True
@@ -667,8 +691,10 @@ def main() -> None:
                         help="Stop when total input+output tokens (agent+reflector) exceed this; 0=unlimited")
     parser.add_argument("--max_time_sec",   type=int,   default=0,
                         help="Stop after this many seconds of wall-clock time; 0=unlimited")
-    parser.add_argument("--prune_threshold", type=float, default=0,
+    parser.add_argument("--prune_threshold", type=float, default=0.05,
                         help="Prune a child if its score < parent_Q - threshold; 0=disabled")
+    parser.add_argument("--max_cost_usd",   type=float, default=0,
+                        help="Hard stop when estimated total $ (agent+reflector, per costs.tsv) exceeds this; 0=unlimited")
     parser.add_argument("--force_init",     action="store_true",
                         help="Re-initialise root even if tree exists")
     parser.add_argument("--skip_eval",      action="store_true",
@@ -711,6 +737,7 @@ def main() -> None:
         alpha_max=args.alpha_max,
         n_runs=args.n_runs,
         prune_threshold=args.prune_threshold,
+        max_cost_usd=args.max_cost_usd,
     )
 
 

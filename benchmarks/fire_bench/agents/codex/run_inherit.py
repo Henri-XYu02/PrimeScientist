@@ -23,7 +23,9 @@ from dotenv import load_dotenv
 load_dotenv()
 
 Main_Path = Path(__file__).parents[2]   # benchmarks/fire_bench/
-Data_Path = Path(os.environ.get("FIRE_BENCH_DATA") or "/data/xinle/FIRE-Bench")
+# Unset-fallback kept identical to the harness (<repo>/fire_bench_data) so agent
+# and harness always agree — see run.py for why a mismatch is catastrophic.
+Data_Path = Path(os.environ.get("FIRE_BENCH_DATA") or (Main_Path.parent.parent / "fire_bench_data"))
 
 
 def _load_skills(main_path: Path, task_id: str) -> str:

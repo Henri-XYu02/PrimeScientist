@@ -39,6 +39,23 @@ def _read_total_tokens(cost_ledger: Path) -> int:
     return total
 
 
+def _read_total_cost(cost_ledger: Path) -> float:
+    if not cost_ledger.exists():
+        return 0.0
+    total = 0.0
+    try:
+        for line in cost_ledger.read_text(encoding="utf-8").splitlines()[1:]:
+            parts = line.split("\t")
+            if len(parts) >= 4:
+                try:
+                    total += float(parts[3] or 0)
+                except ValueError:
+                    pass
+    except Exception as e:
+        log_error("_read_total_cost", e, cost_ledger=cost_ledger)
+    return total
+
+
 # ---------------------------------------------------------------------------
 # History (shown to agent as a "skill" document)
 # ---------------------------------------------------------------------------
@@ -128,6 +145,7 @@ def run_vanilla(
     max_tokens: int,
     max_iters: int,
     max_time_sec: int = 0,
+    max_cost_usd: float = 0.0,
 ) -> None:
 
     benchmark    = load_benchmark(benchmark_name, benchmark_path)
@@ -178,9 +196,14 @@ def run_vanilla(
         parts.append(f"tokens={_read_total_tokens(cost_ledger):,}/{max_tokens:,}")
         if max_time_sec > 0:
             parts.append(f"time={time_module.time()-start_time:.0f}s/{max_time_sec}s")
+        if max_cost_usd > 0:
+            parts.append(f"cost=${_read_total_cost(cost_ledger):.2f}/${max_cost_usd:.0f}")
         return "  ".join(parts)
 
     def _over_budget() -> bool:
+        if max_cost_usd > 0 and _read_total_cost(cost_ledger) >= max_cost_usd:
+            print(f"  [budget] Cost limit reached: ${_read_total_cost(cost_ledger):.2f} >= ${max_cost_usd:.2f} (est.)")
+            return True
         used = _read_total_tokens(cost_ledger)
         if max_tokens > 0 and used >= max_tokens:
             print(f"  [budget] Token limit reached: {used:,} >= {max_tokens:,}")
@@ -191,6 +214,8 @@ def run_vanilla(
         return False
 
     i = start_iter
+    consec_fail = 0
+    MAX_CONSEC_FAIL = 3
     while i < max_iters:
         print(f"\n{'─'*60}")
         print(f"  Iteration {i}  |  {_budget_status()}  |  task={task}")
@@ -214,9 +239,16 @@ def run_vanilla(
         env_override = best_sandbox if (best_sandbox.exists() and best_score > 0) else None
         run_id = benchmark.run_agent(task, agent, model, run_env, env_override=env_override)
         if run_id is None:
-            print(f"  [run] iter {i}: agent run failed — skipping.")
+            consec_fail += 1
+            print(f"  [run] iter {i}: agent run failed — skipping. "
+                  f"({consec_fail}/{MAX_CONSEC_FAIL} consecutive)")
+            if consec_fail >= MAX_CONSEC_FAIL:
+                print(f"  [abort] {consec_fail} consecutive agent failures — aborting "
+                      f"(likely a config/path issue; not burning the rest of the budget).")
+                break
             i += 1
             continue
+        consec_fail = 0
 
         packet  = benchmark.evaluate(task, run_id)
         score   = benchmark.primary_score(packet)
@@ -329,6 +361,8 @@ def main() -> None:
                         help="Safety cap on number of iterations")
     parser.add_argument("--max_time_sec",   type=int, default=0,
                         help="Stop after this many seconds of wall-clock time; 0=unlimited")
+    parser.add_argument("--max_cost_usd",   type=float, default=0,
+                        help="Hard stop when estimated total $ (per costs.tsv) exceeds this; 0=unlimited")
     args = parser.parse_args()
 
     output_dir = Path(args.output_dir)
@@ -353,6 +387,7 @@ def main() -> None:
         max_tokens=args.max_tokens,
         max_iters=args.max_iters,
         max_time_sec=args.max_time_sec,
+        max_cost_usd=args.max_cost_usd,
     )
 
 

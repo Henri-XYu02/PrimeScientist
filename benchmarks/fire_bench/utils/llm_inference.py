@@ -61,6 +61,11 @@ class LLMInference:
         self.total_input_tokens = 0
         self.total_output_tokens = 0
         self.total_cost_usd = 0.0
+        self.total_calls = 0
+        # Hard cost caps for the agent's own experiment API calls (uncounted by
+        # the outer harness ledger). 0 = unlimited. Set via env to bound spend.
+        self._max_calls = int(os.environ.get("FIREBENCH_MAX_CALLS", "0") or 0)
+        self._max_cost  = float(os.environ.get("FIREBENCH_MAX_COST_USD", "0") or 0)
 
         if self.provider == "openai":
             openai.api_key = self.api_key
@@ -187,7 +192,21 @@ class LLMInference:
         }
 
     # ---- Unified generate ----
+    def _enforce_budget(self):
+        """Abort the run once the per-instance call / cost cap is hit, so a
+        runaway experiment loop can't quietly rack up hundreds of API calls."""
+        if self._max_calls and self.total_calls >= self._max_calls:
+            raise RuntimeError(
+                f"FIREBENCH_MAX_CALLS ({self._max_calls}) reached "
+                f"(${self.total_cost_usd:.2f} spent) — aborting to cap cost.")
+        if self._max_cost and self.total_cost_usd >= self._max_cost:
+            raise RuntimeError(
+                f"FIREBENCH_MAX_COST_USD (${self._max_cost:.2f}) reached "
+                f"({self.total_calls} calls) — aborting to cap cost.")
+
     def generate(self, prompt, **kwargs):
+        self._enforce_budget()
+        self.total_calls += 1
         if self.provider == "openai":
             return self._generate_openai(prompt, **kwargs)
         elif self.provider == "gemini":

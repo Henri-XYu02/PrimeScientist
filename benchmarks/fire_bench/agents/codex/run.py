@@ -11,10 +11,12 @@ load_dotenv()
 
 # Repo path
 Main_Path = Path(__file__).parents[2]  # benchmarks/fire_bench/ (contains benchmark/ data)
-# Must match the harness (FireBench reads FIRE_BENCH_DATA). Hardcoding this broke
-# per-repeat isolation: the agent wrote logs somewhere the harness never looked,
-# so every run was reported "agent run failed" while still spending real tokens.
-Data_Path = Path(os.environ.get("FIRE_BENCH_DATA") or "/data/xinle/FIRE-Bench")
+# Must match the harness (FireBench reads FIRE_BENCH_DATA, defaulting to
+# <repo>/fire_bench_data). Hardcoding this broke per-repeat isolation: the agent
+# wrote logs somewhere the harness never looked, so every run was reported
+# "agent run failed" while still spending real tokens. Keep the unset-fallback
+# identical to the harness's so a fresh clone works without any env setup.
+Data_Path = Path(os.environ.get("FIRE_BENCH_DATA") or (Main_Path.parent.parent / "fire_bench_data"))
 
 
 def _load_skills(main_path: Path, task_id: str) -> str:

@@ -29,7 +29,7 @@ conda activate metascientist
 pip install -r requirements.txt
 
 # 2. Secrets
-cp .env.example .env       # fill in OPENAI_API_KEY etc.
+cp .env.example .env       # fill in OPENAI_API_KEY etc. (FIRE_BENCH_DATA optional)
 
 # 3. (FIRE-Bench only) build the per-run docker image
 docker build -t firebench-codex:0.1 benchmarks/fire_bench/agents/codex/
@@ -98,6 +98,16 @@ Read from `.env` via `python-dotenv`. Full list documented inline in
 | `FIREBENCH_USE_DOCKER` | `1` to run the FIRE-Bench codex agent inside docker | `0` |
 
 ---
+
+### FIRE-Bench data directory (`FIRE_BENCH_DATA`)
+
+FIRE-Bench keeps all per-run state (agent sandboxes, logs, RAGChecker results)
+under one directory. Two options:
+
+- **Leave it unset** — defaults to `<repo>/fire_bench_data`, created on first run.
+- **Set it in `.env`** — uncomment the `FIRE_BENCH_DATA` line in your `.env` (copied
+  from [`.env.example`](.env.example)) and point it at an absolute path, e.g. a
+  bigger disk (`FIRE_BENCH_DATA=/scratch/$USER/fire_bench_data`).
 
 ### Setup Codex
 

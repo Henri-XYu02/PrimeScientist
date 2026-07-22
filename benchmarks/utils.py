@@ -3,12 +3,21 @@ benchmarks/utils.py — Shared helpers for benchmark agent runners.
 """
 
 import json
+import os
 import re
 import traceback
 from datetime import datetime
 from pathlib import Path
 
 ERROR_LOG = Path(__file__).parent.parent / "errors.log"
+
+# `codex exec` reports only ONE cumulative "tokens used" number with no
+# input/output/reasoning split, so we cannot price output/reasoning tokens
+# (billed ~4x input) accurately. This calibration multiplier scales the codex
+# cost estimate up to track real spend (observed ~3-4x underestimate). Bias
+# high on purpose: the estimate feeds the --max_cost_usd hard cap, so
+# overestimating stops runs early rather than overspending. Tune via env.
+CODEX_COST_MULT = float(os.environ.get("METASCI_CODEX_COST_MULT", "3.5"))
 
 
 def log_error(context: str, exc: BaseException, **extra) -> None:
@@ -241,13 +250,16 @@ def _parse_codex_cost(text: str, model: str) -> dict:
         return {}
 
     in_p, out_p = _openai_unit_price(model)
-    cost = (prompt_tok * in_p + completion_tok * out_p) / 1_000_000
+    # Codex gives no output/reasoning split -> scale up by CODEX_COST_MULT so the
+    # estimate (and the --max_cost_usd cap it feeds) tracks real spend.
+    cost = (prompt_tok * in_p + completion_tok * out_p) / 1_000_000 * CODEX_COST_MULT
 
     return {
         "input_tokens":  prompt_tok,
         "output_tokens": completion_tok,
         "cost_usd":      round(cost, 6),
         "cost_estimated": True,
+        "cost_mult":     CODEX_COST_MULT,
     }
 
 

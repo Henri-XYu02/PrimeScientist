@@ -23,7 +23,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 Main_Path = Path(__file__).parents[2]   # benchmarks/fire_bench/
-Data_Path = Path("/data/xinle/FIRE-Bench")
+Data_Path = Path(os.environ.get("FIRE_BENCH_DATA") or "/data/xinle/FIRE-Bench")
 
 
 def _load_skills(main_path: Path, task_id: str) -> str:

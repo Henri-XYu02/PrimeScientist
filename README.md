@@ -1,9 +1,10 @@
-# MetaScientist: Budget-Adaptive Research Plan Tree Search
+# PrimeScientist: Budget-Adaptive Research Plan Tree Search
 
+[![arXiv](https://img.shields.io/badge/arXiv-2609.17846-b31b1b.svg)](https://arxiv.org/abs/2609.17846)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Python 3.11](https://img.shields.io/badge/python-3.11-blue.svg)](https://www.python.org/downloads/)
 
-Code for **MetaScientist**, a budget-adaptive tree-search framework for
+Code for **PrimeScientist**, a budget-adaptive tree-search framework for
 autonomous research agents. Each tree node is an *experimental plan*
 executed by a coding agent (Codex); a *reflector agent* reads each result and
 proposes child plans. A budget-adaptive selection rule (BAVT,
@@ -19,7 +20,8 @@ Evaluated on three benchmarks:
 Baselines: a **linear AutoResearch** edit-run-keep-or-revert loop
 (`run_vanilla.py`) and a single-shot agent — both under the same token budget.
 
-> Paper: *MetaScientist*. arXiv link forthcoming.
+> Paper: [*PrimeScientist: Strategic Allocation of Research Effort in
+> Autonomous Research*](https://arxiv.org/abs/2609.17846) (arXiv:2609.17846).
 
 ---
 
@@ -27,8 +29,8 @@ Baselines: a **linear AutoResearch** edit-run-keep-or-revert loop
 
 ```bash
 # 1. Environment
-conda create -n metascientist python=3.11 -y
-conda activate metascientist
+conda create -n primescientist python=3.11 -y
+conda activate primescientist
 pip install -r requirements.txt
 
 # 2. Secrets
@@ -90,7 +92,7 @@ shifting exploration → exploitation.
 ## Repository layout
 
 ```
-run_search.py               # entry point: tree search (MetaScientist)
+run_search.py               # entry point: tree search (PrimeScientist)
 run_vanilla.py              # entry point: linear AutoResearch baseline
 
 scripts/                    # tmux launchers — see scripts/README.md
@@ -184,11 +186,15 @@ run is reported as failed while still spending tokens.
 ## Citation
 
 ```bibtex
-@misc{metascientist,
-  title  = {MetaScientist: Budget-Adaptive Research Plan Tree Search},
-  author = {Yu, Xinle},
-  year   = {2026},
-  note   = {arXiv preprint forthcoming}
+@misc{yu2026primescientist,
+  title         = {PrimeScientist: Strategic Allocation of Research Effort in
+                   Autonomous Research},
+  author        = {Yu, Xinle and Bai, Fan and Sun, Kaiser and Miao, Hengshuo and
+                   Anand, Abhay and Luo, Zhongyan and Zhou, Kun and Wang, Zhen},
+  year          = {2026},
+  eprint        = {2609.17846},
+  archivePrefix = {arXiv},
+  url           = {https://arxiv.org/abs/2609.17846}
 }
 ```
 

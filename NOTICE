@@ -1,4 +1,4 @@
-MetaScientist bundles third-party code. Those components keep their own
+PrimeScientist bundles third-party code. Those components keep their own
 licenses, which take precedence over the repository's MIT LICENSE for the
 files they cover.
 

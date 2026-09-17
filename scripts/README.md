@@ -5,9 +5,9 @@ window per task so runs proceed in parallel and survive a dropped SSH session.
 
 | Script | Benchmark | Method | tmux session |
 |---|---|---|---|
-| `run_firebench.sh` | FIRE-Bench | MetaScientist tree search | `firebench` |
+| `run_firebench.sh` | FIRE-Bench | PrimeScientist tree search | `firebench` |
 | `run_firebench_vanilla.sh` | FIRE-Bench | linear AutoResearch baseline | `firebench-vanilla` |
-| `run_autolab.sh` | AutoLab | MetaScientist tree search | `autolab` |
+| `run_autolab.sh` | AutoLab | PrimeScientist tree search | `autolab` |
 | `run_autolab_vanilla.sh` | AutoLab | linear AutoResearch baseline | `autolab-vanilla` |
 
 Run them from anywhere — each resolves the repo root from its own location:
@@ -17,7 +17,7 @@ bash scripts/run_firebench.sh
 tmux attach -t firebench       # Ctrl-b w to list windows, Ctrl-b n/p to step
 ```
 
-Each launcher activates the `metascientist` conda env via `conda run`. A window
+Each launcher activates the `primescientist` conda env via `conda run`. A window
 stays open after its task finishes so you can read the final output; press
 Enter to close it.
 

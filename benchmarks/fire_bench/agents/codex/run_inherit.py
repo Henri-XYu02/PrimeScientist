@@ -172,10 +172,54 @@ def main() -> None:
         f.write(f"GOOGLE_API_KEY={google_key}\n")
         f.write(f"HF_TOKEN={hf_token}\n")
 
-    # See agents/codex/run.py for the two execution modes (Docker vs. host).
+    # See agents/codex/run.py for the execution modes (enroot vs. Docker vs. host).
     use_docker = os.environ.get("FIREBENCH_USE_DOCKER", "0") == "1"
 
-    if use_docker:
+    use_enroot = os.environ.get("FIREBENCH_USE_ENROOT", "0") == "1"
+    if use_enroot:
+        # Prebuilt .sqsh for the codex agent image. No portable default exists
+        # (it is produced out-of-band via `enroot import`), so require it.
+        image = os.environ.get("FIREBENCH_CODEX_ENROOT_IMAGE", "")
+        if not image:
+            sys.exit(
+                "FIREBENCH_USE_ENROOT=1 but FIREBENCH_CODEX_ENROOT_IMAGE is unset. "
+                "Point it at the codex agent .sqsh image."
+            )
+
+        # Same credential dir the Docker path uses.
+        codex_auth_dir = Path(
+            os.environ.get("CODEX_AUTH_DIR") or (Path.home() / ".codex")
+        ).expanduser()
+        libnvidia_ml = os.environ.get(
+            "FIREBENCH_LIBNVIDIA_ML", "/usr/lib/x86_64-linux-gnu/libnvidia-ml.so.1"
+        )
+
+        cmd = [
+            "enroot", "start", "--root", "--rw",
+            "-e", f"NVIDIA_VISIBLE_DEVICES={os.environ.get('FIREBENCH_ENROOT_GPU', 'all')}",
+            "-e", "NVIDIA_DRIVER_CAPABILITIES=compute,utility",
+        ]
+        if Path(libnvidia_ml).exists():
+            cmd += ["-m", f"{libnvidia_ml}:{libnvidia_ml}:x-create=file,bind,ro"]
+        cmd += [
+            "-m", f"{sandbox_volume_path}:/sandbox:x-create=dir,bind,rw",
+            "-m", f"{codex_auth_dir}:/agent-home/.codex:x-create=dir,bind,rw",
+            "-e", "HOME=/agent-home",
+            "-e", f"OPENAI_API_KEY={openai_key}",
+            "-e", f"ANTHROPIC_API_KEY={anthropic_key}",
+            "-e", f"GOOGLE_API_KEY={google_key}",
+            "-e", f"HF_TOKEN={hf_token}",
+            "-e", f"AGENT_ID={agent_id}",
+            "-e", f"TASK_ID={task_id}",
+            "-e", f"LLM_MODEL={LLM_MODEL}",
+            image,
+            "sh", "-c", 'cd /sandbox && exec "$@"', "--",
+            "codex", "--model", LLM_MODEL, "--config", "sandbox_mode=danger-full-access",
+            "--ask-for-approval=never", "exec", "--skip-git-repo-check", instruction_text,
+        ]
+        run_kwargs = {}
+        mode_label = f"enroot ({image})"
+    elif use_docker:
         image = os.environ.get("FIREBENCH_CODEX_IMAGE", "firebench-codex:0.1")
 
         # Host dir holding codex credentials (auth.json), mounted into the

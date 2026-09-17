@@ -30,6 +30,8 @@ __pycache__/
 .instruction_with_limits.md
 # Scratch workspaces created by the AutoLab harness
 benchmarks/autolab/_workspaces/
+# Default enroot image cache (AUTOLAB_ENROOT_IMAGE_DIR)
+benchmarks/autolab/_enroot_images/
 
 # ── Deprecated run dirs ──────────────────────────────────────────────────────
 /log_agentflow

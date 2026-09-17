@@ -15,10 +15,14 @@ Agent workflow:
   3. evaluate    — docker build (cached), docker run with sandbox mounted, read reward
   4. _move_artifacts — sandbox + log moved into node directory
 
-No Harbor required. Docker only for evaluation.
+No Harbor required. Container runtime for build+evaluation is Docker by
+default, or enroot when AUTOLAB_CONTAINER_RUNTIME=enroot (for hosts where
+Docker is unavailable).
 """
 
 import json
+import os
+import re
 import shutil
 import subprocess
 import sys
@@ -143,7 +147,7 @@ class AutoLab(Benchmark):
         # ── Pre-build Docker image so the agent can use build_check.sh ─────────
         image_tag = f"autolab-{task.replace('_', '-')}"
         env_dir   = self._root / "tasks" / task / "environment"
-        self._docker_build(env_dir, image_tag)
+        self._build(env_dir, image_tag)
 
         # ── Write build_check.sh into sandbox ────────────────────────────────
         check_script = _make_build_check_script(
@@ -214,10 +218,10 @@ class AutoLab(Benchmark):
             print(f"  [eval] ERROR: sandbox not found: {sandbox}")
         else:
             image_tag = f"autolab-{task.replace('_', '-')}"
-            if not self._docker_build(task_dir / "environment", image_tag):
-                reward_detail = {"error": "docker_build_failed"}
+            if not self._build(task_dir / "environment", image_tag):
+                reward_detail = {"error": "image_build_failed"}
             else:
-                reward, reward_detail = self._docker_eval(
+                reward, reward_detail = self._eval(
                     sandbox, task_dir / "tests" / "test.sh",
                     image_tag, task,
                 )
@@ -242,6 +246,21 @@ class AutoLab(Benchmark):
         return float(packet.get("score", {}).get("reward") or 0.0)
 
     # ── Docker helpers ────────────────────────────────────────────────────────
+
+    @staticmethod
+    def _use_enroot() -> bool:
+        """Which container runtime to use. Docker stays the default so hosts that
+        still have it are unaffected; set AUTOLAB_CONTAINER_RUNTIME=enroot where
+        Docker is unavailable."""
+        return os.environ.get("AUTOLAB_CONTAINER_RUNTIME", "docker").lower() == "enroot"
+
+    def _build(self, env_dir: Path, image_tag: str) -> bool:
+        return self._enroot_build(env_dir, image_tag) if self._use_enroot() \
+            else self._docker_build(env_dir, image_tag)
+
+    def _eval(self, sandbox: Path, test_sh: Path, image_tag: str, task: str) -> tuple[float, dict]:
+        return self._enroot_eval(sandbox, test_sh, image_tag, task) if self._use_enroot() \
+            else self._docker_eval(sandbox, test_sh, image_tag, task)
 
     def _docker_build(self, env_dir: Path, image_tag: str) -> bool:
         """Build the Docker image from environment/Dockerfile (uses layer cache)."""
@@ -349,7 +368,7 @@ class AutoLab(Benchmark):
             print(f"  [docker] WARNING: reward.json not produced")
             return 0.0, {
                 "error": "no_reward_json",
-                "verifier_output_tail": combined[-2000:] if combined else "",
+                "verifier_output_tail": _verifier_tail(combined) if combined else "",
             }
 
         try:
@@ -359,13 +378,282 @@ class AutoLab(Benchmark):
             # diagnostic information (build errors or correctness diff) to the
             # reflector without requiring a separate file read.
             if combined:
-                detail["verifier_output_tail"] = combined[-2000:]
+                detail["verifier_output_tail"] = _verifier_tail(combined)
             return reward, detail
         except (json.JSONDecodeError, ValueError) as e:
             print(f"  [docker] WARNING: bad reward.json ({e})")
             return 0.0, {
                 "error": str(e),
-                "verifier_output_tail": combined[-2000:] if combined else "",
+                "verifier_output_tail": _verifier_tail(combined) if combined else "",
+            }
+
+    # ── Enroot backend ────────────────────────────────────────────────────────
+    #
+    # For hosts without Docker (e.g. no docker group membership, no root).
+    # enroot has no Dockerfile builder, so _enroot_build replays a Dockerfile's
+    # FROM/ENV/WORKDIR/RUN/COPY instructions (the only ones AutoLab's Dockerfiles
+    # use) against a container created from an imported base image, then exports
+    # the result as a cached .sqsh — the enroot analogue of a docker image layer
+    # cache. _enroot_eval mirrors _docker_eval's mount layout and reuses its
+    # downstream reward/timeout/diff logic unchanged; only the container
+    # mechanism differs. Toggle with AUTOLAB_CONTAINER_RUNTIME=enroot (default
+    # stays docker so hosts that still have docker are unaffected).
+
+    # Where built/imported .sqsh images are cached. Override with
+    # AUTOLAB_ENROOT_IMAGE_DIR; defaults under the benchmark dir so a fresh
+    # clone works without configuration (it is gitignored).
+    _ENROOT_IMG_DIR = Path(
+        os.environ.get("AUTOLAB_ENROOT_IMAGE_DIR") or (AUTOLAB_DIR / "_enroot_images")
+    ).expanduser()
+
+    def _enroot_base_image(self, base: str) -> Path:
+        """Import (or reuse the cached import of) a base image, e.g. 'ubuntu:22.04'."""
+        self._ENROOT_IMG_DIR.mkdir(parents=True, exist_ok=True)
+        safe = re.sub(r"[^A-Za-z0-9_.-]", "_", base)
+        sqsh = self._ENROOT_IMG_DIR / f"base_{safe}.sqsh"
+        if not sqsh.exists():
+            print(f"  [enroot] Importing base image {base} ...")
+            result = subprocess.run(
+                ["enroot", "import", "-o", str(sqsh), f"docker://{base}"],
+                capture_output=True, text=True,
+            )
+            if result.returncode != 0 or not sqsh.exists():
+                print(f"  [enroot] Base import FAILED:\n{result.stderr[-1000:]}")
+                raise RuntimeError(f"enroot import failed for {base}")
+        return sqsh
+
+    @staticmethod
+    def _parse_dockerfile(dockerfile: Path) -> list[tuple[str, str]]:
+        """Return a list of (INSTRUCTION, ARGS) pairs, joining line continuations.
+        Only FROM/ENV/WORKDIR/RUN/COPY are meaningful to the replayer; anything
+        else (CMD, ENTRYPOINT, ARG, USER, ...) is returned but ignored by callers.
+        """
+        raw = dockerfile.read_text(encoding="utf-8")
+        # Join backslash line-continuations into one logical line.
+        raw = re.sub(r"\\\r?\n", " ", raw)
+        instrs = []
+        for line in raw.splitlines():
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            m = re.match(r"([A-Za-z]+)\s+(.*)$", line)
+            if m:
+                instrs.append((m.group(1).upper(), m.group(2).strip()))
+        return instrs
+
+    def _enroot_run(self, name: str, script: str, mounts: list[str] | None = None) -> None:
+        """enroot start --root --rw <name> bash -c <script>, raising on failure.
+
+        enroot bakes the base image's ENV (PATH, GOPATH, etc.) into /etc/environment
+        on import, but a plain `bash -c` does not source it automatically — without
+        this, any base image whose tools live off the default PATH (golang, rust,
+        ...) fails with "command not found". Source it explicitly first.
+        """
+        script = f"set -a; [ -f /etc/environment ] && . /etc/environment; set +a; {script}"
+        cmd = ["enroot", "start", "--root", "--rw"]
+        for m in mounts or []:
+            cmd += ["-m", m]
+        cmd += [name, "bash", "-c", script]
+        result = subprocess.run(cmd, capture_output=True, text=True)
+        if result.returncode != 0:
+            raise RuntimeError(
+                f"enroot step failed (exit {result.returncode}):\n"
+                f"{result.stdout[-2000:]}\n{result.stderr[-2000:]}"
+            )
+
+    def _enroot_build(self, env_dir: Path, image_tag: str) -> bool:
+        """Replay the task's Dockerfile via enroot; cache the result as a .sqsh."""
+        self._ENROOT_IMG_DIR.mkdir(parents=True, exist_ok=True)
+        sqsh = self._ENROOT_IMG_DIR / f"{image_tag}.sqsh"
+        if sqsh.exists():
+            return True  # cached — mirrors docker's layer-cache short-circuit
+
+        dockerfile = env_dir / "Dockerfile"
+        if not dockerfile.exists():
+            print(f"  [enroot] No Dockerfile at {dockerfile}")
+            return False
+
+        print(f"  [enroot] Building {image_tag} (replaying Dockerfile) ...")
+        container = f"build-{image_tag}-{os.getpid()}"
+        try:
+            instrs = self._parse_dockerfile(dockerfile)
+            base = next(a for i, a in instrs if i == "FROM")
+            base_sqsh = self._enroot_base_image(base)
+
+            subprocess.run(["enroot", "remove", "-f", container],
+                           capture_output=True)  # in case of a stale leftover
+            create = subprocess.run(
+                ["enroot", "create", "--name", container, str(base_sqsh)],
+                capture_output=True, text=True,
+            )
+            if create.returncode != 0:
+                print(f"  [enroot] create FAILED:\n{create.stderr[-1000:]}")
+                return False
+
+            # Build ONE combined shell script and run it in a SINGLE enroot start
+            # call. enroot resets /tmp (and possibly other ephemeral paths) between
+            # separate `enroot start` invocations even with --rw, so a Dockerfile
+            # that COPYs to /tmp in one step and reads it back in a later RUN step
+            # (e.g. concurrent_kv_wal) silently loses the file if each instruction
+            # is its own enroot start call. Only /app-style rootfs paths persist
+            # across separate invocations; running everything in one shell session
+            # sidesteps the distinction entirely and matches docker build semantics
+            # (one continuous filesystem for the whole build) more closely anyway.
+            workdir = "/"
+            lines: list[str] = ["set -e"]
+            for instr, args in instrs:
+                if instr == "ENV":
+                    m = re.match(r"(\w+)[= ](.*)$", args)
+                    if m:
+                        lines.append(f'export {m.group(1)}="{m.group(2).strip().strip(chr(34))}"')
+                elif instr == "WORKDIR":
+                    workdir = args.strip()
+                    lines.append(f"mkdir -p {workdir} && cd {workdir}")
+                elif instr == "RUN":
+                    lines.append(f"cd {workdir} && {args}")
+                elif instr == "COPY":
+                    parts = args.split()
+                    if len(parts) >= 2:
+                        *srcs, dst = parts
+                        dst_full = dst if dst.startswith("/") else f"{workdir}/{dst}"
+                        dst_dir = dst_full if dst_full.endswith("/") else str(Path(dst_full).parent)
+                        for s in srcs:
+                            lines.append(f"mkdir -p {dst_dir} && cp -r /mnt/src/{s} {dst_full}")
+                # FROM/CMD/ENTRYPOINT/ARG/USER: no-op for the replayer
+
+            src_mount = f"{env_dir}:/mnt/src:x-create=dir,bind,ro"
+            self._enroot_run(container, "\n".join(lines), mounts=[src_mount])
+
+            export = subprocess.run(
+                ["enroot", "export", "--output", str(sqsh), container],
+                capture_output=True, text=True,
+            )
+            if export.returncode != 0 or not sqsh.exists():
+                print(f"  [enroot] export FAILED:\n{export.stderr[-1000:]}")
+                return False
+            print(f"  [enroot] Build OK: {image_tag}")
+            return True
+        except Exception as e:
+            print(f"  [enroot] Build FAILED: {e}")
+            sqsh.unlink(missing_ok=True)
+            return False
+        finally:
+            subprocess.run(["enroot", "remove", "-f", container], capture_output=True)
+
+    def _enroot_eval(
+        self,
+        sandbox: Path,
+        test_sh: Path,
+        image_tag: str,
+        task: str,
+    ) -> tuple[float, dict]:
+        """enroot equivalent of _docker_eval: same mount layout, same downstream
+        reward/timeout/diff handling — only the container mechanism differs."""
+        reward_dir = sandbox / "_reward"
+        reward_dir.mkdir(exist_ok=True)
+
+        cpus, memory_mb, gpus = self._read_resource_limits(self._root / "tasks" / task)
+        verifier_timeout = self._read_verifier_timeout(self._root / "tasks" / task)
+
+        sqsh = self._ENROOT_IMG_DIR / f"{image_tag}.sqsh"
+        instance = f"eval-{image_tag}-{os.getpid()}-{int(time.time()*1000)}"
+        subprocess.run(["enroot", "remove", "-f", instance], capture_output=True)
+        create = subprocess.run(
+            ["enroot", "create", "--name", instance, str(sqsh)],
+            capture_output=True, text=True,
+        )
+        if create.returncode != 0:
+            return 0.0, {"error": "enroot_create_failed",
+                         "verifier_output_tail": create.stderr[-2000:]}
+
+        mounts = [
+            f"{sandbox}:/app:x-create=dir,bind,rw",
+            f"{reward_dir}:/logs/verifier:x-create=dir,bind,rw",
+            f"{test_sh}:/eval.sh:x-create=file,bind,ro",
+        ]
+        for script in sorted(test_sh.parent.glob("*.py")):
+            mounts.append(f"{script}:/tests/{script.name}:x-create=file,bind,ro")
+
+        # CPU/memory limits: enroot has no --cpus/--memory equivalent, so wrap in
+        # a transient systemd user scope (the same effect as docker's cgroup limits).
+        # --rw: docker containers are writable by default; enroot's are read-only
+        # unless asked. Verifiers that compile at eval time (e.g. `go build`/`go run`
+        # writing to /root/.cache/go-build) need a writable rootfs or they fail with
+        # "read-only file system" — this eval instance is freshly created and
+        # discarded per node, so writability here has no persistence implications.
+        cmd = [
+            "systemd-run", "--user", "--scope", "--quiet",
+            f"-pCPUQuota={cpus * 100}%", f"-pMemoryMax={memory_mb}M",
+            "--", "enroot", "start", "--root", "--rw",
+        ]
+        for m in mounts:
+            cmd += ["-m", m]
+        # See _enroot_run: source the image's baked-in ENV (PATH etc.) first,
+        # since test.sh may itself invoke go/rustc/etc.
+        cmd += [instance, "bash", "-c",
+                "set -a; [ -f /etc/environment ] && . /etc/environment; set +a; bash /eval.sh"]
+
+        print(f"  [enroot] Running verifier (timeout={verifier_timeout}s) ...")
+        try:
+            result = subprocess.run(cmd, capture_output=True, timeout=verifier_timeout)
+        except subprocess.TimeoutExpired:
+            print(f"  [enroot] Verifier TIMEOUT after {verifier_timeout}s")
+            subprocess.run(["enroot", "remove", "-f", instance], capture_output=True)
+            return 0.0, {
+                "error": "verifier_timeout",
+                "verifier_output_tail": (
+                    f"VERIFIER TIMEOUT: killed after {verifier_timeout}s wall-clock "
+                    f"(limit from task.toml) using {cpus} CPU(s), {memory_mb} MB RAM, "
+                    f"{gpus} GPU(s).\n"
+                    "No score could be computed, so reward is 0 no matter how good "
+                    "the solution was.\n"
+                    "CAUSE: the code under test — including any training or search it "
+                    "performs at verify time — did not finish within the limit.\n"
+                    "FIX: cut compute hard — far fewer epochs/iterations, smaller "
+                    "training set, smaller model, vectorised numpy/torch, or precompute "
+                    "weights instead of training during verification."
+                ),
+            }
+        finally:
+            subprocess.run(["enroot", "remove", "-f", instance], capture_output=True)
+
+        combined = (
+            (result.stdout or b"").decode("utf-8", errors="replace") +
+            (result.stderr or b"").decode("utf-8", errors="replace")
+        )
+        if combined:
+            print(combined[-3000:])
+            (reward_dir / "verifier.log").write_text(combined, encoding="utf-8")
+        if result.returncode not in (0, 1):
+            print(f"  [enroot] Verifier exited {result.returncode}")
+
+        try:
+            self._write_baseline_diff(task, sandbox, reward_dir)
+        except Exception as e:
+            log_error("_write_baseline_diff", e, task=task, sandbox=sandbox)
+
+        reward_json = reward_dir / "reward.json"
+        if not reward_json.exists():
+            print(f"  [enroot] WARNING: reward.json not produced")
+            return 0.0, {
+                "error": "no_reward_json",
+                "verifier_output_tail": _verifier_tail(combined) if combined else "",
+            }
+
+        try:
+            detail = json.loads(reward_json.read_text(encoding="utf-8"))
+            reward = float(detail.get("reward", 0.0))
+            if combined:
+                detail["verifier_output_tail"] = _verifier_tail(combined)
+                acc_m = re.search(r"accuracy=([0-9]*\.?[0-9]+)", combined)
+                if acc_m:
+                    detail["accuracy"] = float(acc_m.group(1))
+            return reward, detail
+        except (json.JSONDecodeError, ValueError) as e:
+            print(f"  [enroot] WARNING: bad reward.json ({e})")
+            return 0.0, {
+                "error": str(e),
+                "verifier_output_tail": _verifier_tail(combined) if combined else "",
             }
 
     def _write_baseline_diff(self, task: str, sandbox: Path, reward_dir: Path) -> None:
@@ -438,6 +726,34 @@ class AutoLab(Benchmark):
 # ---------------------------------------------------------------------------
 # Module-level helpers
 # ---------------------------------------------------------------------------
+
+def _verifier_tail(combined: str, limit: int = 2000) -> str:
+    """
+    Reflector-facing tail of the verifier output.
+
+    A raw `combined[-limit:]` can drop the score: libraries (e.g. torch's
+    `enable_nested_tensor` UserWarning) print repeated multi-line warnings AFTER
+    `accuracy=…`/`params=…`, pushing the metrics out of the window — so the
+    reflector cannot tell which node scored higher. This drops that boilerplate
+    noise and pins every metric/verdict line to the top so it always survives
+    truncation.
+    """
+    NOISE = ("UserWarning", "warnings.warn(", "enable_nested_tensor",
+             "self.use_nested_tensor", "TracerWarning", "FutureWarning",
+             "DeprecationWarning")
+    kept = [ln for ln in combined.splitlines() if not any(n in ln for n in NOISE)]
+    METRIC = re.compile(
+        r"(validation_accuracy|accuracy|params|reward|metric|PASS|FAIL|correctness)",
+        re.IGNORECASE,
+    )
+    metrics = [ln.strip() for ln in kept if METRIC.search(ln)]
+    head = ""
+    if metrics:
+        head = "KEY METRICS (parsed from verifier output):\n" + \
+               "\n".join(metrics[-15:]) + \
+               "\n\n--- verifier output (noise-filtered tail) ---\n"
+    return head + "\n".join(kept)[-limit:]
+
 
 def _make_build_check_script(env_dir: Path, tests_dir: Path, image_tag: str) -> str:
     """Return the content of build_check.sh for the sandbox, or '' if not applicable.

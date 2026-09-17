@@ -141,6 +141,10 @@ Read from `.env` via `python-dotenv`. Full list documented inline in
 | `FIRE_BENCH_VANILLA_RUNS` | Override `--output_dir` for `run_vanilla.py` | `./vanilla_runs` |
 | `FIREBENCH_USE_DOCKER` | `1` to run the FIRE-Bench codex agent inside docker | `0` |
 | `CODEX_AUTH_DIR` | Host dir with codex credentials, mounted into the container | `~/.codex` |
+| `AUTOLAB_CONTAINER_RUNTIME` | `docker` or `enroot` for AutoLab build + verify | `docker` |
+| `AUTOLAB_ENROOT_IMAGE_DIR` | Where enroot `.sqsh` images are cached | `benchmarks/autolab/_enroot_images` |
+| `FIREBENCH_USE_ENROOT` | `1` to run the FIRE-Bench codex agent under enroot | `0` |
+| `FIREBENCH_CODEX_ENROOT_IMAGE` | Prebuilt `.sqsh` for the codex agent (required if the above is `1`) | — |
 
 ### FIRE-Bench data directory (`FIRE_BENCH_DATA`)
 
@@ -170,7 +174,10 @@ run is reported as failed while still spending tokens.
 - **High-variance FIRE-Bench tasks** are evaluated twice per plan; the budget
   tracker charges both runs.
 - **AutoLab** verifier runs in Docker with per-task resource limits from
-  `benchmarks/autolab/tasks/{task}/task.toml`.
+  `benchmarks/autolab/tasks/{task}/task.toml`. On hosts without Docker, set
+  `AUTOLAB_CONTAINER_RUNTIME=enroot`: AutoLab then replays each task's
+  Dockerfile under enroot and caches the result as a `.sqsh`, applying the same
+  CPU/memory limits via a transient `systemd-run --user --scope`.
 
 ---
 

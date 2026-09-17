@@ -1,18 +1,38 @@
+# ── Secrets ──────────────────────────────────────────────────────────────────
+.env
+/*/.env
 env_template
+api_key.txt
+.codex/auth.json
+
+# ── Python ───────────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.egg-info/
+.ipynb_checkpoints/
+
+# ── Editors / agent tooling ──────────────────────────────────────────────────
+/.vscode
+/.idea
 /.claude
+/.openhands
+
+# ── Run artifacts (created at runtime; see README "Configuration") ───────────
+/fire_bench_data
+/search_tree
+/search_tree_old
+/vanilla_runs
+/runs
 /log
 /results
-/runs
-/.openhands
-/.vscode
-/*/.env
-.env
+
+# Generated per-task instruction copy with execution limits appended (AutoLab)
+.instruction_with_limits.md
+# Scratch workspaces created by the AutoLab harness
+benchmarks/autolab/_workspaces/
+
+# ── Deprecated run dirs ──────────────────────────────────────────────────────
 /log_agentflow
 /runs_agentflow
 /log_deprecated
 /runs_deprecated
-/search_tree
-/*/__pycache__/
-/search_tree_old
-/vanilla_runs
-*.pyc

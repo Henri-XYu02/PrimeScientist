@@ -148,6 +148,12 @@ def main():
     if use_docker:
         image = os.environ.get("FIREBENCH_CODEX_IMAGE", "firebench-codex:0.1")
 
+        # Host dir holding codex credentials (auth.json), mounted into the
+        # container. Overridable so the repo is not tied to one machine.
+        codex_auth_dir = Path(
+            os.environ.get("CODEX_AUTH_DIR") or (Path.home() / ".codex")
+        ).expanduser()
+
         openai_env_keys = [
             "OPENAI_BASE_URL", "OPENAI_API_BASE", "OPENAI_API_HOST",
             "OPENAI_ORG", "OPENAI_ORG_ID", "OPENAI_PROJECT",
@@ -163,11 +169,11 @@ def main():
             "--gpus", "all",
             "--user", f"{os.getuid()}:{os.getgid()}",
             "-v", f"{sandbox_volume_path}:/sandbox",
-            "-v", "/home/xinle/.codex:/agent-home/.codex",
+            "-v", f"{codex_auth_dir}:/agent-home/.codex",
             "-w", "/sandbox",
             "-e", "HOME=/agent-home",
 
-            # 🔥 core keys
+            # API keys the agent needs inside the sandbox
             "-e", f"OPENAI_API_KEY={openai_key}",
             "-e", f"ANTHROPIC_API_KEY={anthropic_key}",
             "-e", f"GOOGLE_API_KEY={google_key}",

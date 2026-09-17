@@ -18,7 +18,7 @@
 #
 # Each task runs in its own tmux window inside the session "firebench".
 # Usage:
-#   ./run_firebench.sh          # launch all tasks
+#   bash scripts/run_firebench.sh          # launch all tasks
 #   tmux attach -t firebench           # monitor progress
 
 set -e
@@ -40,7 +40,9 @@ TASKS=(
     neural_collapse_losses
 )
 
-WORKDIR="$(cd "$(dirname "$0")" && pwd)"
+# Repo root (this script lives in scripts/); run_search.py / run_vanilla.py
+# are resolved from there, so the launcher works from any cwd.
+WORKDIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 # Create session (detached) or reuse existing one.
 if ! tmux has-session -t "=$SESSION" 2>/dev/null; then

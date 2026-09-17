@@ -1,0 +1,22 @@
+MetaScientist bundles third-party code. Those components keep their own
+licenses, which take precedence over the repository's MIT LICENSE for the
+files they cover.
+
+────────────────────────────────────────────────────────────────────────────
+RAGChecker — benchmarks/fire_bench/eval/RAGChecker/
+  Upstream: https://github.com/amazon-science/RAGChecker
+  License:  Apache License 2.0 (see that directory's LICENSE)
+  Changes:  evaluator adjusted to surface per-claim false-positive and
+            false-negative reasoning (see benchmarks/fire_bench/eval/readme.md).
+
+────────────────────────────────────────────────────────────────────────────
+AutoLab — benchmarks/autolab/
+  Upstream: https://github.com/autolabhq/autolab (vendored at 6c7968d)
+  Changes:  task-instruction edits and harness glue for this repo.
+  See benchmarks/autolab/README.md for upstream documentation.
+
+────────────────────────────────────────────────────────────────────────────
+FIRE-Bench task data — benchmarks/fire_bench/benchmark/papers/
+  Per-paper datasets redistributed from their original sources; individual
+  task directories carry upstream LICENSE/README files where the source
+  provided them (e.g. questbench/data/questbench_data/LICENSE).

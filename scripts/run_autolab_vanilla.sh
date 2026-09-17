@@ -9,7 +9,7 @@
 #
 # Each task runs in its own tmux window inside the session "autolab-vanilla".
 # Usage:
-#   ./run_autolab_vanilla.sh               # launch all tasks
+#   bash scripts/run_autolab_vanilla.sh               # launch all tasks
 #   tmux attach -t autolab-vanilla         # monitor progress
 
 set -e
@@ -27,7 +27,9 @@ TASKS=(
     smallest_game_player
 )
 
-WORKDIR="$(cd "$(dirname "$0")" && pwd)"
+# Repo root (this script lives in scripts/); run_search.py / run_vanilla.py
+# are resolved from there, so the launcher works from any cwd.
+WORKDIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 # Create session (detached) or reuse existing one.
 if ! tmux has-session -t "$SESSION" 2>/dev/null; then

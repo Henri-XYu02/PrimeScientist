@@ -101,9 +101,8 @@ def _format_history(results_tsv: Path, packets: list[dict], max_entries: int = 1
 # Excluded from best_sandbox commits:
 #   _reward, target  — autolab build dirs (root-owned inside Docker)
 #   .agents, .env    — per-run skill stage and API keys (regenerated each run)
-#   CLAUDE.md        — agent meta-file
 #   __pycache__      — Python bytecode
-COMMIT_IGNORE = shutil.ignore_patterns("_reward", ".agents", ".env", "CLAUDE.md", "__pycache__", "target")
+COMMIT_IGNORE = shutil.ignore_patterns("_reward", ".agents", ".env", "__pycache__", "target")
 
 
 def _commit(iter_sandbox: Path, best_sandbox: Path) -> None:
@@ -350,7 +349,7 @@ def main() -> None:
     parser.add_argument("--task",           required=True,
                         help="Task ID to iterate on")
     parser.add_argument("--agent",          default="codex",
-                        help="Coding agent (codex, claude, ...)")
+                        help="Coding agent (codex)")
     parser.add_argument("--model",          default="gpt-5",
                         help="LLM model for the agent")
     parser.add_argument("--output_dir",     default=os.environ.get("FIRE_BENCH_VANILLA_RUNS", "./vanilla_runs"),

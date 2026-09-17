@@ -77,7 +77,7 @@ for evaluation.
 | `--task` | *required* | Task ID to search on |
 | `--agent` | `codex` | Coding agent that executes each plan |
 | `--model` | `gpt-5` | LLM backing the agent |
-| `--reflector_agent` | `codex` | `codex` or `claude` |
+| `--reflector_agent` | `codex` | Coding agent used as reflector (`codex`) |
 | `--reflector_model` | `gpt-5` | LLM backing the reflector |
 | `--reflector_timeout` | `600` | Reflector subprocess timeout (s) |
 | `--budget` | `10` | Total agent runs (evaluations) |

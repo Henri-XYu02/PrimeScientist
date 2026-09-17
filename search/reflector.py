@@ -1,17 +1,15 @@
 """
 search/reflector.py — Coding-agent reflector for FIRE-Bench skill search.
 
-The reflector is a full Codex / Claude Code agent session — not a raw LLM API
-call. It receives the search tree directory and a minimal prompt, then reads
-whatever files it finds relevant (logs, prior skill.md, packets, prior.json)
-via standard shell tools (cat, grep, ls). This is the Meta-Harness approach:
+The reflector is a full Codex agent session — not a raw LLM API call. It
+receives the search tree directory and a minimal prompt, then reads whatever
+files it finds relevant (logs, prior skill.md, packets, prior.json) via
+standard shell tools (cat, grep, ls). This is the Meta-Harness approach:
 full filesystem access instead of pre-digested summaries.
 
 Session persistence:
-  - Claude Code: `--resume <sessionId>` reuses the same conversation across calls,
-    giving the agent memory of every prior proposal it made.
-  - Codex: fresh session each call, but reads prior proposals from the tree itself
-    (skill.md, prior.json, stats.json files serve as its external memory).
+  Codex starts a fresh session each call, but reads prior proposals from the
+  tree itself (skill.md, prior.json, stats.json serve as its external memory).
 
 Session ID is stored at: search_tree/{task}/reflector_session.json
 """
@@ -354,23 +352,6 @@ def _save_session(session_file: Path, session_id: str) -> None:
     _save_session_state(session_file, session_id=session_id)
 
 
-def _parse_claude_model(output: str) -> str | None:
-    """Extract model name from Claude Code stream-json output (modelUsage keys)."""
-    for line in output.splitlines():
-        line = line.strip()
-        if not line:
-            continue
-        try:
-            obj = json.loads(line)
-            # result objects have modelUsage: {"claude-opus-4-6": {...}}
-            model_usage = obj.get("modelUsage") or {}
-            if model_usage:
-                return next(iter(model_usage))
-        except json.JSONDecodeError:
-            pass
-    return None
-
-
 def _parse_codex_model(output: str) -> str | None:
     """Extract model name from codex header line 'model: <name>'."""
     m = re.search(r"^model:\s*(\S+)", output, re.MULTILINE)
@@ -383,78 +364,9 @@ def _parse_codex_session_id(output: str) -> str | None:
     return m.group(1) if m else None
 
 
-def _parse_session_id(output: str) -> str | None:
-    """Extract sessionId from Claude Code stream-json output."""
-    for line in output.splitlines():
-        line = line.strip()
-        if not line:
-            continue
-        try:
-            obj = json.loads(line)
-            # Claude Code emits {"type":"system","subtype":"init","session_id":"..."}
-            if obj.get("type") == "system" and "session_id" in obj:
-                return obj["session_id"]
-            # Also appears in result objects
-            if "session_id" in obj:
-                return obj["session_id"]
-        except json.JSONDecodeError:
-            pass
-    return None
-
-
 # ---------------------------------------------------------------------------
 # Agent invocation
 # ---------------------------------------------------------------------------
-
-def _run_claude_code(
-    prompt: str,
-    cwd: str,
-    session_file: Path,
-    timeout: int = 600,
-) -> tuple[bool, dict]:
-    """Run Claude Code as the reflector. Returns (success, cost_info)."""
-    session_id = _load_session(session_file)
-
-    cmd = [
-        "claude",
-        "--dangerously-skip-permissions",
-        "--output-format", "stream-json",
-        "--verbose",
-    ]
-    if session_id:
-        cmd += ["--resume", session_id, "--print", prompt]
-    else:
-        cmd += ["--print", prompt]
-
-    print(f"  [reflector:claude] cwd={cwd}  session={session_id or 'new'}")
-    try:
-        result = subprocess.run(
-            cmd, cwd=cwd, capture_output=True, text=True, timeout=timeout,
-        )
-    except subprocess.TimeoutExpired:
-        print(f"  [reflector:claude] TIMEOUT after {timeout}s")
-        return False, {}
-
-    log_path = _write_reflector_log(cwd, "claude", result.stdout or "", result.stderr or "")
-    reflector_model = _parse_claude_model(result.stdout or "") or "claude-opus-4-6"
-    cost_info = parse_run_cost(log_path, "claude", reflector_model)
-    print_cost(cost_info, "reflector:claude", reflector_model)
-    append_cost_ledger(Path(cwd) / "costs.tsv", cost_info, "reflector:claude", reflector_model)
-
-    if result.stdout:
-        sid = _parse_session_id(result.stdout)
-        if sid:
-            _save_session(session_file, sid)
-            print(f"  [reflector:claude] session_id saved: {sid}")
-
-    if result.returncode != 0:
-        print(f"  [reflector:claude] exit {result.returncode}")
-        if result.stderr:
-            print(result.stderr[:500])
-        return False, cost_info
-
-    return True, cost_info
-
 
 REFLECTOR_CODEX_VERSION = "0.121.0"
 
@@ -567,17 +479,14 @@ def _run_reflector_agent(
     prompt: str,
     cwd: str,
     session_file: Path,
-    agent: str = "claude",
+    agent: str = "codex",
     model: str = "o4-mini",
     timeout: int = 600,
 ) -> tuple[bool, dict]:
     """Returns (success, cost_info)."""
-    if agent == "claude":
-        return _run_claude_code(prompt, cwd, session_file, timeout)
-    elif agent == "codex":
+    if agent == "codex":
         return _run_codex(prompt, cwd, session_file, model, timeout)
-    else:
-        raise ValueError(f"Unknown reflector agent: {agent!r} (choose 'claude' or 'codex')")
+    raise ValueError(f"Unknown reflector agent: {agent!r} (only 'codex' is supported)")
 
 
 # ---------------------------------------------------------------------------
@@ -596,7 +505,7 @@ def init_task(
     root_node,            # TreeNode
     instruction_path: Path,
     insights_dir: Path | None = None,
-    agent: str = "claude",
+    agent: str = "codex",
     model: str = "o4-mini",
     tree_dir: Path | None = None,
     timeout: int = 600,
@@ -671,7 +580,7 @@ def reflect_and_propose(
     n_proposals: int,
     tree_dir: Path,
     insights_dir: Path,
-    agent: str = "claude",
+    agent: str = "codex",
     model: str = "o4-mini",
     timeout: int = 600,
     is_reexpand: bool = False,

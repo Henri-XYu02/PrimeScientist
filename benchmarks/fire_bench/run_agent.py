@@ -95,7 +95,17 @@ def main():
     else:
         if seed_repo:
             print(f"[run_agent] WARNING: seed set but {args.AGENT_ID} has no run_inherit.py — running fresh")
-        cmd = [sys.executable, str(Main_Path / "agents" / args.AGENT_ID / "run.py")]
+        run_script = Main_Path / "agents" / args.AGENT_ID / "run.py"
+        if not run_script.exists():
+            available = sorted(
+                d.name for d in (Main_Path / "agents").iterdir()
+                if (d / "run.py").exists()
+            )
+            sys.exit(
+                f"[run_agent] unknown agent {args.AGENT_ID!r}: no "
+                f"agents/{args.AGENT_ID}/run.py. Available: {', '.join(available)}"
+            )
+        cmd = [sys.executable, str(run_script)]
 
     TIME_LIMIT = 3600  # 1 hour per run
 

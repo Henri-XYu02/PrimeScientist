@@ -5,7 +5,7 @@
 
 Code for **MetaScientist**, a budget-adaptive tree-search framework for
 autonomous research agents. Each tree node is an *experimental plan*
-executed by a coding agent; a *reflector agent* reads each result and
+executed by a coding agent (Codex); a *reflector agent* reads each result and
 proposes child plans. A budget-adaptive selection rule (BAVT,
 `α = 1/r_t`) shifts the search from exploration to exploitation as the
 token budget is consumed.
@@ -101,14 +101,14 @@ scripts/                    # tmux launchers — see scripts/README.md
 
 search/
   tree.py                   # TreeNode + BAVT/UCT/Greedy/Random selection
-  reflector.py              # reflector agent (codex or claude)
+  reflector.py              # reflector agent (codex)
 
 benchmarks/
   base.py                   # Benchmark ABC
   registry.py               # name → Benchmark class
   utils.py                  # log parsing, cost pricing, ledger I/O
   fire_bench/               # FIRE-Bench (research-paper replication)
-    agents/                 #   per-agent runners (codex, claude, openhands)
+    agents/                 #   per-agent runners (codex, openhands)
     benchmark/papers/       #   per-task instruction + RAGChecker data
     eval/RAGChecker/        #   vendored RAGChecker evaluator
     utils/                  #   shared helpers copied into each sandbox
@@ -132,9 +132,9 @@ Read from `.env` via `python-dotenv`. Full list documented inline in
 
 | Variable | What | Default |
 |---|---|---|
-| `OPENAI_API_KEY` | OpenAI access for codex agent + reflector | required |
-| `ANTHROPIC_API_KEY` | Anthropic access for claude agent | if using claude |
-| `HF_TOKEN` | Hugging Face token (some FIRE-Bench tasks) | if using HF |
+| `OPENAI_API_KEY` | OpenAI access for the codex agent + reflector | required |
+| `ANTHROPIC_API_KEY` | Passed to task sandboxes; some FIRE-Bench papers query Claude as the subject of the experiment | task-dependent |
+| `HF_TOKEN` | Hugging Face token (some FIRE-Bench tasks) | task-dependent |
 | `GOOGLE_API_KEY` | Gemini (some FIRE-Bench tasks) | optional |
 | `FIRE_BENCH_DATA` | Per-run logs / sandboxes / RAGChecker output dir | `./fire_bench_data` |
 | `FIRE_BENCH_SEARCH_TREE` | Override `--output_dir` for `run_search.py` | `./search_tree` |
@@ -159,9 +159,10 @@ run is reported as failed while still spending tokens.
 
 ## Reproducibility notes
 
-- **Backbone:** GPT-5 via the Codex CLI. The two suites pin different
-  releases: FIRE-Bench uses `@openai/codex@0.39.0` (baked into the docker
-  image), AutoLab uses `@openai/codex@0.121.0` (fetched with `npx`).
+- **Backbone:** GPT-5 via the Codex CLI — the only supported agent and
+  reflector backend. The two suites pin different releases: FIRE-Bench uses
+  `@openai/codex@0.39.0` (baked into the docker image), AutoLab uses
+  `@openai/codex@0.121.0` (fetched with `npx`).
 - **Per-task token budget:** `B = 1.5 × 10⁶` (`--max_tokens`); derivation in
   [`scripts/README.md`](scripts/README.md).
 - **Hyperparameters:** `m = 3` proposals per expansion, `α_max = 10`,

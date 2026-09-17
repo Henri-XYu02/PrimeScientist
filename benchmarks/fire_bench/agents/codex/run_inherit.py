@@ -236,7 +236,7 @@ def main() -> None:
         mode_label = "host (sandbox_mode=workspace-write)"
 
     if use_subscription:
-        print("Subscription is only available for Claude Code right now, still need OPENAI_API_KEY.")
+        print("USE_SUBSCRIPTION is not supported for the codex agent; still using OPENAI_API_KEY.")
     else:
         print(f"Running Codex with API key authentication [{mode_label}]")
 

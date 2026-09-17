@@ -11,7 +11,7 @@ Each task provides:
 
 Agent workflow:
   1. setup_node  — stage skill.md for run_agent to pick up
-  2. run_agent   — copy environment/ to sandbox, run claude/codex to edit code
+  2. run_agent   — copy environment/ to sandbox, run codex to edit code
   3. evaluate    — docker build (cached), docker run with sandbox mounted, read reward
   4. _move_artifacts — sandbox + log moved into node directory
 
@@ -99,7 +99,7 @@ class AutoLab(Benchmark):
     ) -> str | None:
         """
         Copy environment/ (or env_override) to a fresh sandbox, inject skill,
-        run claude/codex with cwd = sandbox so the agent edits files directly.
+        run codex with cwd = sandbox so the agent edits files directly.
         Returns a timestamp_id run_id, or None on error.
 
         env_override lets a caller (e.g. vanilla-baseline loop) seed the
@@ -120,7 +120,7 @@ class AutoLab(Benchmark):
         # per-iteration (reward output, injected skill files).
         shutil.copytree(
             str(env_src), str(sandbox),
-            ignore=shutil.ignore_patterns("_reward", ".agents", "CLAUDE.md", "target"),
+            ignore=shutil.ignore_patterns("_reward", ".agents", "target"),
         )
 
         # ── Skill injection ───────────────────────────────────────────────────
@@ -155,17 +155,7 @@ class AutoLab(Benchmark):
             p.chmod(0o755)
 
         # ── Build command ─────────────────────────────────────────────────────
-        if agent in ("claude", "claude-code"):
-            cmd = [
-                "claude",
-                "-p", instruction,
-                "--model", model,
-                "--output-format", "stream-json",
-                "--verbose",
-                "--add-dir", str(sandbox),
-                "--dangerously-skip-permissions",
-            ]
-        elif agent == "codex":
+        if agent == "codex":
             # Use npx to pin the version independently of the globally installed codex.
             # fire_bench uses the global codex (0.39.0); autolab uses a newer release.
             cmd = [
@@ -177,7 +167,7 @@ class AutoLab(Benchmark):
                 instruction,
             ]
         else:
-            print(f"  [run] Unknown agent: {agent!r} (choose 'claude' or 'codex')")
+            print(f"  [run] Unknown agent: {agent!r} (only 'codex' is supported)")
             return None
 
         # ── Run ───────────────────────────────────────────────────────────────
@@ -393,7 +383,7 @@ class AutoLab(Benchmark):
                 [
                     "diff", "-ruN",
                     "--exclude=_reward", "--exclude=.agents",
-                    "--exclude=CLAUDE.md", "--exclude=.git",
+                    "--exclude=.git",
                     "--exclude=__pycache__", "--exclude=node_modules",
                     str(baseline), str(sandbox),
                 ],

@@ -665,7 +665,7 @@ def main() -> None:
     parser.add_argument("--task",           required=True,
                         help="Task ID to search on")
     parser.add_argument("--agent",          default="codex",
-                        help="Agent to run tasks (codex, terminus-2, …)")
+                        help="Agent to run tasks (codex)")
     parser.add_argument("--model",          default="gpt-5",
                         help="LLM model for the agent")
     parser.add_argument("--budget",         type=int, default=10,
@@ -679,10 +679,10 @@ def main() -> None:
     parser.add_argument("--max_depth",      type=int,   default=0,
                         help="Max tree depth; 0 = unlimited")
     parser.add_argument("--reflector_agent", default="codex",
-                        choices=["claude", "codex"],
+                        choices=["codex"],
                         help="Coding agent used as reflector")
     parser.add_argument("--reflector_model", default="gpt-5",
-                        help="Model for the reflector agent (e.g. o4-mini, claude-opus-4-6)")
+                        help="Model for the reflector agent (e.g. gpt-5, o4-mini)")
     parser.add_argument("--reflector_timeout", type=int, default=600,
                         help="Reflector subprocess timeout in seconds")
     parser.add_argument("--n_runs",         type=int,   default=1,
